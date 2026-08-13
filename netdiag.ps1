@@ -492,7 +492,7 @@ if ($ScanLevel -in @('Medium', 'Deep', 'JMeter')) {
                 $previousRtt = $avgHopRtt
             } else {
                 Write-Host ("{0,-4} {1,-18} {2,-8} {3,-8} {4,-8} {5,-8} {6,-10} {7,-14}" -f $hopIndex, $hopIp, "N/A", "N/A", "N/A", "N/A", "100%", "ICMP Engeli") -ForegroundColor DarkGray
-                $RouteReportRows.Add([PSCustomObject]@{ Hop = $hopIndex; IP = $hopIp; Min = "N/A"; Max = "N/A"; Avg = "N/A"; Jitter = "N/A"; Loss = "100%", Status = "ICMP Engeli"; CssClass = "failed" })
+                $RouteReportRows.Add([PSCustomObject]@{ Hop = $hopIndex; IP = $hopIp; Min = "N/A"; Max = "N/A"; Avg = "N/A"; Jitter = "N/A"; Loss = "100%"; Status = "ICMP Engeli"; CssClass = "failed" })
             }
             $hopIndex++
         }
