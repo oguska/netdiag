@@ -41,7 +41,7 @@ param (
 )
 
 # --- SABİTLER VE SÜRÜM BİLGİSİ ---
-$ScriptVersion = "7.2"
+$ScriptVersion = "7.2.1"
 $GithubRawUrl = "https://raw.githubusercontent.com/oguska/netdiag/main/netdiag.ps1"
 
 # --- OTOMATİK SÜRÜM KONTROLÜ (AUTO-UPDATE CHECK) ---
