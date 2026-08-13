@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Gelişmiş Ağ Teşhis, JMeter Yük, Donanım Envanter & Otomatik Güncelleme Framework'ü (v7.1)
+    Gelişmiş Kurumsal Ağ Teşhis, JMeter Yük, Donanım Envanter & Otomatik Güncelleme Framework'ü (v7.2 Fixed Raw URL)
 #>
 
 [CmdletBinding()]
@@ -41,7 +41,8 @@ param (
 )
 
 # --- SABİTLER VE SÜRÜM BİLGİSİ ---
-$ScriptVersion = "7.1"
+$ScriptVersion = "7.2"
+# DÜZELTME: Doğrudan ham kod URL'si (raw.githubusercontent) kullanıldı
 $GithubRawUrl = "https://raw.githubusercontent.com/oguska/netdiag/main/netdiag.ps1"
 
 # --- OTOMATİK SÜRÜM KONTROLÜ (AUTO-UPDATE CHECK) ---
@@ -78,7 +79,6 @@ function Test-ScriptUpdate {
     }
 }
 
-# Eğer sadece güncelleme kontrolü istenmişse
 if ($CheckUpdate) {
     Test-ScriptUpdate
     Exit
@@ -92,7 +92,6 @@ if ([string]::IsNullOrWhiteSpace($Target)) {
     Write-Host "=========================================================================" -ForegroundColor Cyan
     Write-Host ""
     
-    # Başlangıçta arka planda hızlı sürüm kontrolü
     Test-ScriptUpdate
     Write-Host ""
 
