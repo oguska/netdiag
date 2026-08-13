@@ -40,13 +40,11 @@ param (
     [switch]$CheckUpdate
 )
 
-# --- GLOBAL DEĞİŞKEN (En başta tanımla) ---
+# ---COMMIT VERSION---
 $CurrentCommit = "ad71321" 
 
 # --- OTOMATİK SÜRÜM KONTROLÜ ---
-function Test-ScriptUpdate {
-    # Fonksiyon içindeki tanımlamayı kaldır, global olanı kullan
-    
+function Test-ScriptUpdate {  
     Write-Host "[*] Güncellemeler kontrol ediliyor..." -ForegroundColor Gray
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
