@@ -144,9 +144,13 @@ if ([string]::IsNullOrWhiteSpace($Target)) {
         }
     }
 
-    $htmlAns = Read-Host "`n -> HTML Raporu kaydedilsin mi? (E/H) [Varsayılan: E]"
+	$htmlAns = Read-Host "`n -> HTML Raporu kaydedilsin mi? (E/H) [Varsayılan: E]"
     if ([string]::IsNullOrWhiteSpace($htmlAns) -or $htmlAns -match '^[EeYy]') {
-        $defaultPath = "C:\scripts\NetworkReport_$($Target -replace '[^a-zA-Z0-9]','_').html"
+        # Scriptin çalıştığı dizini dinamik olarak al (bulamazsa bulunulan terminal dizinini kullan)
+        $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+        
+        $defaultPath = Join-Path $scriptDir "NetworkReport_$($Target -replace '[^a-zA-Z0-9]','_').html"
+        
         $inputPath = Read-Host " -> Kayıt Yolu [Varsayılan: $defaultPath]"
         if ([string]::IsNullOrWhiteSpace($inputPath)) { $ExportHtmlPath = $defaultPath } else { $ExportHtmlPath = $inputPath }
     }
