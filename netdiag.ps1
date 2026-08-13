@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    An advanced enterprise network diagnostic, JMeter load testing, hardware inventory
+    A advanced enterprise network diagnostic, JMeter load testing, hardware inventory
 #>
 
 [CmdletBinding()]
