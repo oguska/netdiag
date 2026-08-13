@@ -1,18 +1,21 @@
 # NetDiag
 
-NetDiag is an advanced PowerShell-based diagnostic framework for Windows. It combines DNS validation, ICMP and Path MTU testing, TCP port checks, hop-by-hop route analysis, endpoint jitter measurements, concurrent HTTP load testing, SSL inspection, system inventory, automated correlation, multilingual interactive output, and enterprise-ready HTML reporting in a single script.
+NetDiag is an advanced PowerShell-based diagnostic framework for Windows. It combines DNS validation, ICMP and Path MTU testing, protocol-aware TCP and UDP service validation, hop-by-hop route analysis, endpoint jitter measurements, concurrent HTTP load testing, TLS certificate inspection, HTTP fallback handling, system inventory, automated cross-correlation, multilingual output, and enterprise-ready HTML reporting in a single script.
 
 NetDiag is designed to help distinguish among:
 
 - DNS and name-resolution problems
 - ICMP filtering and endpoint reachability issues
-- TCP port and firewall behavior
+- TCP connectivity versus actual application-service availability
+- UDP service availability and indeterminate UDP responses
 - Route instability and intermediate-hop ICMP variation
-- End-to-end latency, packet response loss, and jitter
-- HTTP response-time and throughput problems
-- Possible server or application bottlenecks
+- End-to-end latency, response loss, and jitter
+- TLS handshake, certificate validity, and HTTPS availability problems
+- HTTP response-time, throughput, and error-rate problems
+- Possible server, application, database, or network bottlenecks
+- Transparent proxy, firewall interception, CDN, WAF, and reverse-proxy behavior
 
-> **Important:** The built-in load test is a native C# HTTP load engine inspired by JMeter-style metrics. It does not launch Apache JMeter and should not be treated as a replacement for a full JMeter test plan.
+> **Important:** The built-in load test is a native C# HTTP load engine inspired by JMeter-style metrics. It does not launch Apache JMeter and is not a replacement for a full Apache JMeter test plan.
 
 ---
 
@@ -21,10 +24,10 @@ NetDiag is designed to help distinguish among:
 ### Multilingual interface and reports
 
 - Automatically detects the Windows UI culture.
-- Uses **Turkish** for `tr-TR` and other `tr-*` cultures.
-- Uses **English** for `en-US` and other cultures by default.
-- Supports manual language selection with `-Language tr`, `-Language en`, or `-Language Auto`.
-- Localizes interactive questions, Yes/No input conventions, console messages, analysis results, table headings, metric names, and HTML reports.
+- Uses Turkish for `tr-TR` and other `tr-*` cultures.
+- Uses English for `en-US` and other cultures by default.
+- Supports manual selection with `-Language tr`, `-Language en`, or `-Language Auto`.
+- Localizes interactive prompts, Yes/No conventions, console messages, correlation results, warnings, table headings, status labels, infographics, privacy notices, and HTML reports.
 - Uses `E/H` and `Evet/Hayır` in Turkish.
 - Uses `Y/N` and `Yes/No` in English.
 
@@ -34,10 +37,11 @@ NetDiag is designed to help distinguish among:
 - Local DNS query-time measurement.
 - Google Public DNS (`8.8.8.8`) comparison.
 - Cloudflare DNS (`1.1.1.1`) comparison.
-- Split-DNS and resolver mismatch warnings.
+- Split-DNS and resolver-mismatch warnings.
 - Authoritative name-server discovery.
 - Reverse DNS (`PTR`) lookup.
-- CNAME and IP signature checks for common CDN or reverse-proxy patterns.
+- CNAME and IP-signature checks for common CDN and reverse-proxy patterns.
+- Separate DNS-over-UDP and DNS-over-TCP protocol validation in extended scan modes.
 
 ### ICMP and endpoint jitter analysis
 
@@ -57,31 +61,91 @@ NetDiag is designed to help distinguish among:
 - Reports the largest successful DF packet size as an IP MTU estimate.
 - Clearly reports when ICMP or DF behavior prevents verification.
 
-### TCP service-port matrix
+### Protocol-aware TCP service matrix
 
-- Tests the selected target port in every applicable scan mode.
-- Tests common service ports in Medium, Deep, and JMeter modes.
-- Distinguishes among:
-  - `Open`
-  - `Closed`
-  - `Filtered`
-  - `Unreachable`
-  - `Error`
-- Measures TCP connection time.
-- Does not treat the absence of a protocol banner as proof that a TCP port is closed.
-- Correlates ICMP reachability with the selected TCP port result.
+NetDiag separates a successful TCP handshake from successful application-protocol validation.
 
-Default extended port matrix:
+Possible TCP results include:
+
+- `SERVICE VERIFIED`
+- `TCP CONNECTED, SERVICE NOT VERIFIED`
+- `CLOSED`
+- `FILTERED / TIMEOUT`
+- `UNREACHABLE`
+- `ERROR`
+
+A completed TCP handshake proves that a connection was established to an endpoint. It does not prove that the expected protocol is running on that endpoint.
+
+Protocol-aware checks include:
+
+- HTTP status-line validation
+- TLS handshake and certificate inspection
+- SSH banner validation
+- RDP X.224 / negotiation-response validation
+- DNS-over-TCP transaction validation
+- SMTP greeting validation
+- POP3 greeting validation
+- IMAP greeting validation
+- Implicit-TLS validation for SMTPS, IMAPS, and POP3S
+- Safe identification of database ports without claiming protocol verification from a handshake alone
+
+### Extended TCP port matrix
+
+Deep and JMeter modes test the following common ports, plus the user-selected target port:
+
+#### Web and administration
 
 - `80` HTTP
-- `443` HTTPS
+- `443` HTTPS / TLS
 - `22` SSH
 - `3389` RDP
-- `53` DNS
+- `53` DNS over TCP
 - `445` SMB
-- The user-selected target port
 
-> A successful TCP handshake confirms that a connection was established. It does not by itself prove that the expected application protocol is running on that port.
+#### Mail services
+
+- `25` SMTP relay
+- `587` SMTP submission / STARTTLS
+- `465` SMTPS / implicit TLS
+- `110` POP3 / STARTTLS
+- `995` POP3S / implicit TLS
+- `143` IMAP / STARTTLS
+- `993` IMAPS / implicit TLS
+
+STARTTLS-capable plaintext ports validate the initial service greeting without submitting credentials or authenticating. Implicit-TLS ports perform a TLS handshake and certificate-date evaluation.
+
+#### Database services
+
+- `1433` Microsoft SQL Server / TDS
+- `3306` MySQL / MariaDB
+- `5432` PostgreSQL
+- `1521` Oracle Database Listener
+
+Database ports are not reported as verified database services based only on a TCP handshake. When no full protocol negotiation is performed, NetDiag reports `TCP CONNECTED, SERVICE NOT VERIFIED`.
+
+### UDP service validation
+
+Deep and JMeter modes include a dedicated UDP validation matrix:
+
+- `53/UDP` DNS query validation
+- `123/UDP` NTP response validation
+- `1434/UDP` SQL Server Browser response validation
+
+Possible UDP results include:
+
+- `SERVICE VERIFIED`
+- `RESPONSE RECEIVED, SERVICE NOT VERIFIED`
+- `NO RESPONSE / INDETERMINATE`
+- `CLOSED OR REJECTED`
+- `ERROR`
+
+> UDP does not establish a connection. No response does not conclusively mean that a UDP port is closed; the service may be open, filtered, restricted, or silently dropping probes.
+
+### Transparent proxy and interception awareness
+
+- Detects suspicious patterns where several unrelated ports accept TCP connections but do not return valid application-protocol responses.
+- Adds an advisory warning for possible transparent proxy, firewall interception, security gateway, or TCP interception behavior.
+- Does not report such ports as verified services.
 
 ### Hop-by-hop route and jitter analysis
 
@@ -100,6 +164,7 @@ Default extended port matrix:
   - Diagnostic status
 - Separates intermediate-hop ICMP variation from destination jitter.
 - Does not automatically classify an unresponsive intermediate hop as end-to-end packet loss.
+- Localizes hidden-hop labels such as `Hidden/Unresponsive (*)`.
 - Gives greater diagnostic weight to destination measurements than to router ICMP behavior.
 
 ### Native C# HTTP Load Engine v2
@@ -112,12 +177,14 @@ Default extended port matrix:
 - Separates response-header time from full-response elapsed time.
 - Applies a response-size limit to reduce uncontrolled memory usage.
 - Treats HTTP `200-399` as successful when any configured assertion also passes.
+- Reports `N/A` instead of blank percentile values when no successful samples exist.
 
 Collected load-test metrics include:
 
-- Requested and measured peak concurrency
+- Requested concurrency
+- Measured peak concurrency
 - Warm-up request count
-- Successful and failed requests
+- Successful and failed request counts
 - Total test duration
 - Throughput in requests per second
 - Average header / TTFB-like time
@@ -133,7 +200,38 @@ Collected load-test metrics include:
 - Average response size
 - Response-data throughput
 
-> The reported header time is a client-observed time until response headers become available. It is useful as a TTFB-like metric but is not a packet-capture-level server timing measurement.
+> Header time is a client-observed measurement until response headers become available. It is a TTFB-like metric, not a packet-capture-level server timing measurement.
+
+### HTTPS certificate inspection and HTTP fallback
+
+For supported HTTPS targets, NetDiag attempts to capture and report:
+
+- TLS handshake result
+- TLS protocol
+- Certificate subject
+- Certificate issuer
+- Certificate valid-from date
+- Certificate valid-until date
+- Remaining validity
+- Certificate status
+
+Certificate states include:
+
+- `Valid`
+- `Expired`
+- `NotYetValid`
+- `Missing`
+- `HandshakeFailed`
+- `MissingOrHandshakeFailed`
+- `NotApplicable`
+
+When HTTPS cannot be verified but HTTP on port 80 is protocol-verified, JMeter mode can fall back to:
+
+```text
+http://target:80/
+```
+
+The effective load-test URL is written to the HTML report. If neither HTTPS nor HTTP/80 can be verified, the load test is skipped instead of generating predictable request failures.
 
 ### External JMeter result analysis
 
@@ -141,58 +239,109 @@ Collected load-test metrics include:
 - Reads the `elapsed` field when available.
 - Calculates and reports the external result-file p95 elapsed time.
 
-### SSL and HTTP inspection
-
-For supported web ports in Deep mode:
-
-- Performs a TLS connection.
-- Reads the remote certificate.
-- Reports certificate subject, issuer, and remaining validity.
-- Sends an HTTP request.
-- Reports HTTP status and total response time.
-
 ### System hardware inventory
 
 - Signed-in user
 - Computer name
 - Operating-system version
-- CPU model and current load when available
+- CPU model
+- Current CPU usage
+- CPU usage data source
 - Total, used, and free memory
 - Logical-disk capacity and utilization
 - Active network adapter
 - Local IPv4 address
 
+CPU utilization uses a fallback chain:
+
+1. `Win32_PerfFormattedData_PerfOS_Processor`
+2. `Get-Counter '\Processor(_Total)\% Processor Time'`
+3. `Win32_Processor.LoadPercentage`
+
+If no source is available, the report displays `N/A` and records the reason.
+
 ### Cross-correlation analysis
 
-The analysis engine correlates destination network quality with application-load metrics. Possible outcomes include:
+The correlation engine evaluates destination network quality together with application-load metrics. Possible outcomes include:
 
 - Insufficient measurement
+- Application test completely failed
+- High application error rate
 - Possible network-quality issue
 - Network and application latency correlation
 - Possible server or application bottleneck
 - Network variation detected, application unaffected
 - Measured values are normal
-- Network quality measured without application load data
+- Network quality measured without application-load data
 - Application measured with limited network data
 - Intermediate-hop ICMP variation without confirmed end-to-end degradation
 
-The analysis is advisory. It does not claim that a client-side test definitively proves a specific IIS, database, operating-system, or infrastructure root cause.
+A 100% HTTP failure rate takes priority and cannot be reported as normal. If no successful HTTP sample exists, HTTP percentiles remain `N/A`.
 
-### HTML dashboard reporting
+The analysis is advisory. A client-side test cannot conclusively identify a specific IIS, database, operating-system, network-device, or application root cause by itself.
+
+### Power BI-inspired HTML infographics
+
+The HTML report includes responsive, dependency-free visual summaries built with embedded HTML and CSS:
+
+- Network-quality KPI cards
+  - Average RTT
+  - Destination p95 RTT
+  - Mean jitter
+  - Response loss
+- HTTP load-test KPI cards
+  - Throughput
+  - HTTP p95
+  - Error rate
+  - Peak concurrency
+- Successful-versus-failed request donut visualization
+- HTTP p50, p75, p90, p95, and p99 horizontal bars
+- Hop-by-hop jitter distribution bars
+- Responsive card layout for desktop and narrow browser windows
+
+No external JavaScript, chart library, CDN asset, or image file is required. Charts are generated only when the required measurements exist; NetDiag does not fabricate missing values.
+
+### Enterprise-ready HTML reporting
 
 - Generates a localized HTML report.
-- Includes system, DNS, ICMP, MTU, TCP, route, jitter, HTTP, SSL, and load-test metrics.
-- Includes advisory messages and correlation results.
+- Includes system, DNS, ICMP, MTU, TCP, UDP, route, jitter, HTTP, TLS, certificate, and load-test metrics.
+- Includes protocol-verification evidence and advisory messages.
 - Includes a detailed hop table with status coloring.
+- Includes Power BI-inspired KPI cards and charts.
 - Safely HTML-encodes externally sourced values.
-- Preserves trusted port-status badge markup generated by the script.
+- Preserves only trusted badge markup generated by NetDiag.
 - Writes to a temporary file first.
-- Overwrites an existing report with the same path.
+- Overwrites an existing report with the same path without an extra prompt.
 - Removes read-only protection from an existing report when possible.
 - Verifies the final UTF-8 byte length before reporting success.
-- Reports whether a file was newly created or overwritten.
-- Displays the final path, file size, and last-write time.
-- Emits a visible error if the file cannot be written or is locked by another process.
+- Reports whether the file was newly created or overwritten.
+- Displays final path, size, and last-write time.
+- Emits a visible error if the report cannot be written or is locked.
+
+### Report footer and project promotion
+
+The report footer includes:
+
+- NetDiag short version / commit identifier
+- A statement that the report was generated by NetDiag
+- A short open-source project description
+- A link to the [NetDiag GitHub project](https://github.com/oguska/netdiag)
+
+### Privacy and data-processing notice
+
+The HTML footer contains a collapsed-by-default privacy disclosure. It explains that:
+
+- Diagnostic results are not sent to a NetDiag-owned server, central database, or the NetDiag developer.
+- Diagnostic values are processed locally during execution.
+- The HTML report is created locally only when the user chooses to save it.
+- The report may contain user name, computer name, local IP address, target address, system inventory, and network measurements.
+- The user or organization running NetDiag is responsible for storing, sharing, and protecting the generated report.
+- Update checks may communicate with GitHub.
+- DNS comparisons may communicate with configured public DNS resolvers.
+- Diagnostic probes communicate with the selected target systems.
+- NetDiag does not use cookies, advertising identifiers, usage analytics, or persistent user profiles.
+
+The disclosure includes informational links to official EU GDPR and Turkish KVKK resources. It is informational and is not legal advice.
 
 ### Commit hash-based auto-update
 
@@ -203,8 +352,8 @@ The analysis is advisory. It does not claim that a client-side test definitively
 - Validates that the downloaded content resembles a PowerShell script.
 - Runs PowerShell parser validation before replacement.
 - Replaces the current script only after validation succeeds.
-- Restarts the updated script in the **current Windows Terminal tab and current PowerShell host**.
-- Does not open a separate `pwsh.exe` or `powershell.exe` window.
+- Restarts the updated script in the current Windows Terminal tab and PowerShell host.
+- Does not intentionally open a separate `pwsh.exe` or `powershell.exe` window.
 - Preserves the selected language during restart.
 - Displays a manual restart command if in-session restart fails.
 
@@ -233,24 +382,32 @@ Standard network analysis:
 
 ### Deep
 
-Detailed web and network diagnostics:
+Detailed service, web, and network diagnostics:
 
 - All Medium checks
-- Extended TCP port matrix
+- Extended protocol-aware TCP matrix
+- Mail-service ports
+- Database-service ports
+- UDP DNS, NTP, and SQL Server Browser validation
 - Detailed route and jitter metrics
-- SSL certificate inspection for supported HTTPS ports
-- HTTP status and response-time check for supported web ports
+- TLS certificate inspection
+- HTTP status and response-time analysis
+- HTML metrics and infographics
 
 ### JMeter
 
 Application-load and network-correlation mode:
 
 - Endpoint ICMP and jitter analysis
-- Extended TCP port matrix
+- Extended TCP and UDP service matrices
+- Mail and database port checks
 - Hop-by-hop route analysis
 - Native C# HTTP Load Engine v2
-- Percentiles, throughput, response sizes, status distribution, errors, and assertions
+- HTTPS certificate evaluation
+- Verified HTTP/80 fallback when HTTPS is unavailable
+- Percentiles, throughput, response-size, status, error, and assertion metrics
 - Network/application cross-correlation
+- Power BI-inspired report infographics
 
 ---
 
@@ -260,10 +417,11 @@ Application-load and network-correlation mode:
 - **PowerShell:** Windows PowerShell 5.1 or PowerShell 7+
 - **Recommended privileges:** Administrator
 - **Network access:** Required for target tests, public DNS checks, and GitHub update checks
-- **PowerShell modules/cmdlets used:**
+- **PowerShell modules and cmdlets used:**
   - `Resolve-DnsName`
   - `Test-NetConnection`
   - `Get-CimInstance`
+  - `Get-Counter`
   - `Get-NetAdapter`
   - `Get-NetIPAddress`
   - `Get-NetIPConfiguration`
@@ -271,7 +429,7 @@ Application-load and network-correlation mode:
   - `Invoke-WebRequest`
   - `Add-Type`
 
-Administrator privileges are recommended for consistent CIM/WMI inventory retrieval and network diagnostics, but some tests may work without elevation.
+Administrator privileges are recommended for consistent CIM/WMI inventory retrieval, performance counters, and network diagnostics. Some checks may work without elevation.
 
 ---
 
@@ -279,14 +437,12 @@ Administrator privileges are recommended for consistent CIM/WMI inventory retrie
 
 Download or clone the repository, then place `netdiag.ps1` in the preferred working directory.
 
-Example:
-
 ```powershell
 Set-Location C:\scripts
 Unblock-File .\netdiag.ps1
 ```
 
-If local execution policy prevents the script from running, start it with:
+If the local execution policy prevents the script from running:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\netdiag.ps1
@@ -422,7 +578,7 @@ The wizard explains:
 -JMeterCsvPath              Optional external JMeter JTL/CSV file
 -ExportHtmlPath             HTML report output path
 -CheckUpdate                Runs update checking in parameter-based execution
--TcpTimeoutMs               TCP connection timeout in milliseconds
+-TcpTimeoutMs               TCP and UDP probe timeout in milliseconds
 -HttpTimeoutSec             HTTP request timeout in seconds
 -PingTimeoutMs              Per-ICMP-probe timeout in milliseconds
 -PingIntervalMs             Delay between ICMP probes
@@ -441,13 +597,11 @@ The wizard explains:
 
 When the selected HTML path already exists, NetDiag overwrites the existing report without an additional confirmation prompt.
 
-Successful overwrite example:
-
 ```text
 [REPORT] Existing report overwritten: C:\scripts\NetworkReport_example_com.html | 15324 Byte | 2026-08-13 15:20:31
 ```
 
-If the report cannot be replaced, NetDiag prints the actual error and does not display a false success message.
+If the report cannot be replaced, NetDiag reports the actual error and does not display a false success message.
 
 ---
 
@@ -467,9 +621,29 @@ If automatic in-session restart fails, NetDiag displays a manual restart command
 
 ---
 
-## Interpreting jitter results
+## Interpreting service results
 
-NetDiag distinguishes among several related measurements:
+### Service verified
+
+The expected protocol returned a recognizable response, banner, handshake, or transaction result.
+
+### TCP connected, service not verified
+
+A TCP handshake completed, but the expected application protocol was not validated. Possible explanations include:
+
+- A different service is running on the port
+- A transparent proxy or security device accepted the connection
+- The protocol did not send the expected greeting
+- TLS negotiation failed
+- The service requires additional negotiation not performed by NetDiag
+
+### No UDP response / indeterminate
+
+No valid UDP response was received. This does not prove that the port is closed because UDP may be silently filtered or dropped.
+
+---
+
+## Interpreting jitter results
 
 - **RTT standard deviation:** Overall RTT dispersion around the average.
 - **Mean jitter:** Average absolute difference between consecutive successful RTT samples.
@@ -490,7 +664,7 @@ Intermediate routers may deprioritize or rate-limit ICMP replies. Therefore:
 - **Download time:** Time spent reading the response after headers arrive.
 - **Elapsed time:** Total client-observed request duration.
 - **Throughput:** Completed measured requests divided by total load-test duration.
-- **Peak concurrency:** Highest number of requests simultaneously active during the measurement.
+- **Peak concurrency:** Highest number of requests simultaneously active during measurement.
 - **Error rate:** Failed measured requests divided by total measured requests.
 
 Warm-up requests are excluded from the main result set.
@@ -501,12 +675,43 @@ Warm-up requests are excluded from the main result set.
 
 - ICMP may be blocked even when the target service is available.
 - A successful TCP handshake does not validate the expected protocol.
+- No UDP response does not conclusively prove a closed port.
 - CDN, WAF, reverse proxy, transparent proxy, or TCP interception can affect observed results.
 - Intermediate-hop ICMP behavior may not represent forwarded application traffic.
 - Path MTU is an estimate and depends on ICMP and Don't Fragment behavior.
 - The HTTP load engine is client-side and does not prove a specific server-side root cause.
-- SSL certificate validation is intentionally relaxed during diagnostic retrieval and load testing. Do not interpret this as a certificate trust validation result.
+- Certificate dates and TLS handshake results do not replace a complete public-key infrastructure, revocation, hostname, or trust-policy assessment.
+- Some diagnostic TLS retrieval uses a permissive callback so that certificate metadata can be inspected. The reported certificate status should not be interpreted as a complete operating-system trust decision.
+- STARTTLS ports currently validate the initial service greeting but do not authenticate or submit credentials.
+- Database ports may be identified by conventional port number without completing full database authentication or protocol negotiation.
 - Large load tests can affect the target service. Only test systems for which authorization has been granted.
+
+---
+
+## Privacy and data handling
+
+NetDiag processes diagnostic information locally and does not send diagnostic results to a NetDiag-owned server, central database, or the NetDiag developer.
+
+The generated HTML report may contain:
+
+- Signed-in user name
+- Computer name
+- Local IP address
+- Target address
+- System inventory
+- Network and application measurements
+
+The user or organization running NetDiag is responsible for storing, sharing, and protecting generated reports.
+
+NetDiag may communicate with:
+
+- GitHub for update checks
+- Configured public DNS resolvers for DNS comparison
+- The selected target systems for diagnostic probes and load testing
+
+NetDiag does not use cookies, advertising identifiers, usage analytics, or persistent user profiles. The report includes a collapsed privacy and data-processing notice with informational links to official EU GDPR and Turkish KVKK resources.
+
+This information is not legal advice. Organizations should separately evaluate obligations under applicable laws, regulations, contracts, and internal policies.
 
 ---
 
@@ -515,8 +720,69 @@ Warm-up requests are excluded from the main result set.
 - Begin with Low or Deep mode before running a load test.
 - Use conservative thread and request counts in production.
 - Confirm authorization before testing third-party or production systems.
-- Review target rate limits, WAF rules, and monitoring alerts.
+- Review target rate limits, WAF rules, firewall rules, and monitoring alerts.
+- Avoid exposing database, mail, SMB, RDP, or SQL Browser services to untrusted networks.
 - Treat correlation output as diagnostic guidance, not definitive proof.
+- Review and sanitize HTML reports before sharing them externally.
+
+---
+
+# Changelog
+
+## Unreleased
+
+### Added
+
+- Protocol-aware TCP service validation with separate handshake and service-verification states.
+- RDP X.224 / negotiation-response validation on TCP/3389.
+- SSH banner validation on TCP/22.
+- HTTP status-line validation on TCP/80.
+- TLS handshake and certificate-date inspection on TCP/443.
+- DNS-over-TCP transaction validation.
+- Mail-service checks for SMTP, SMTP submission, SMTPS, POP3, POP3S, IMAP, and IMAPS.
+- Database-port coverage for Microsoft SQL Server, MySQL/MariaDB, PostgreSQL, and Oracle Database Listener.
+- UDP validation for DNS/53, NTP/123, and SQL Server Browser/1434.
+- Transparent-proxy and TCP-interception advisory logic.
+- TLS certificate states for valid, expired, not-yet-valid, missing, and failed handshakes.
+- Verified HTTP/80 fallback when HTTPS cannot be validated.
+- Effective load-test URL reporting.
+- CPU usage fallback chain and CPU data-source reporting.
+- Power BI-inspired HTML KPI cards.
+- HTTP success/failure donut visualization.
+- HTTP percentile bar visualization.
+- Hop-by-hop jitter bar visualization.
+- Report footer with NetDiag version and GitHub project link.
+- Collapsed privacy and data-processing disclosure.
+- Official GDPR and KVKK informational links in the HTML disclosure.
+
+### Changed
+
+- Extended Deep and JMeter scan matrices with common mail and database ports.
+- Renamed the extended matrix to clarify TCP and UDP service validation.
+- Reworked correlation priority so 100% HTTP failure cannot be reported as normal.
+- Reworked network-variation logic so elevated jitter with healthy application results is reported separately.
+- Replaced blank HTTP latency and percentile values with `N/A` when no successful request sample exists.
+- Localized correlation output directly instead of relying only on post-processing translations.
+- Expanded localization for dynamic inventory, route, service, certificate, chart, and footer values.
+- Improved report overwrite behavior with temporary-file creation, byte-length verification, and explicit create/overwrite status.
+- Updated auto-restart behavior to continue in the current terminal host.
+
+### Fixed
+
+- False-positive `Open` classifications caused by TCP handshake-only checks.
+- RDP/3389 false positives when no RDP X.224 response is present.
+- Duplicate case-insensitive translation keys in PowerShell hash literals.
+- Mixed Turkish and English text in English HTML reports.
+- Turkish hidden-hop labels in English route tables.
+- Missing CPU usage on systems where `Win32_Processor.LoadPercentage` is unavailable.
+- Invalid inline PowerShell `if` expressions in route and CPU report values.
+- Empty TTFB and percentile values after complete HTTP load-test failure.
+- Incorrect `MEASURED VALUES ARE NORMAL` output during 100% HTTP failure.
+- Incorrect full-HTML translation passes that could alter markup or values.
+- Report path overwrite behavior and false-positive report-success messages.
+- Auto-update restart opening a separate PowerShell window.
+- Partially translated phrases such as `Error yok`.
+- Missing translations for service counts, privacy text, infographic headings, and report footer labels.
 
 ---
 
@@ -527,6 +793,9 @@ Issues and pull requests are welcome. When reporting a problem, include:
 - PowerShell version from `$PSVersionTable`
 - Windows version
 - Selected scan level
+- Target service type, with sensitive hostnames sanitized when necessary
 - Sanitized console output
 - Parser errors with line and column numbers
 - Sanitized HTML report when relevant
+
+Project home: [NetDiag on GitHub](https://github.com/oguska/netdiag)
