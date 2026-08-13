@@ -59,7 +59,7 @@ function Test-ScriptUpdate {
             $updateAns = Read-Host " -> Güncellensin mi? (E/H)"
             
             if ($updateAns -match '^[EeYy]') {
-                $rawContent = (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/oguska/netdiag/main/netdiag.ps1" -UseBasicParsing).Content
+                $rawContent = (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/oguska/netdiag/refs/heads/main/netdiag.ps1" -UseBasicParsing).Content
                 $newContent = $rawContent -replace '(?<=CurrentCommit = ")([a-f0-9]{7})', $latestCommitHash
                 $newContent | Out-File -FilePath $PSCommandPath -Encoding utf8 -Force
                 Write-Host "[+] Başarıyla güncellendi. Yeniden başlatılıyor..." -ForegroundColor Green
