@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Gelişmiş Kurumsal Ağ Teşhis, JMeter Yük, Donanım Envanter & Otomatik Güncelleme Framework'ü (v7.2 Fixed Raw URL)
+    An advanced enterprise network diagnostic, JMeter load testing, hardware inventory
 #>
 
 [CmdletBinding()]
@@ -42,7 +42,6 @@ param (
 
 # --- SABİTLER VE SÜRÜM BİLGİSİ ---
 $ScriptVersion = "7.2"
-# DÜZELTME: Doğrudan ham kod URL'si (raw.githubusercontent) kullanıldı
 $GithubRawUrl = "https://raw.githubusercontent.com/oguska/netdiag/main/netdiag.ps1"
 
 # --- OTOMATİK SÜRÜM KONTROLÜ (AUTO-UPDATE CHECK) ---
@@ -88,7 +87,7 @@ if ($CheckUpdate) {
 if ([string]::IsNullOrWhiteSpace($Target)) {
     Clear-Host
     Write-Host "=========================================================================" -ForegroundColor Cyan
-    Write-Host "   NETWORK DIAGNOSTIC & AUTO-UPDATE FRAMEWORK (v$ScriptVersion)          " -ForegroundColor Cyan
+    Write-Host "   NetDiag - An advanced enterprise network diagnostic, JMeter load testing, hardware inventory script (v$ScriptVersion)          " -ForegroundColor Cyan
     Write-Host "=========================================================================" -ForegroundColor Cyan
     Write-Host ""
     
