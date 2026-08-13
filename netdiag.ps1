@@ -40,16 +40,18 @@ param (
     [switch]$CheckUpdate
 )
 
+# --- GLOBAL DEĞİŞKEN (En başta tanımla) ---
+$CurrentCommit = "ad71321" 
+
 # --- OTOMATİK SÜRÜM KONTROLÜ ---
 function Test-ScriptUpdate {
-    $CurrentCommit = "d33d9f4" 
+    # Fonksiyon içindeki tanımlamayı kaldır, global olanı kullan
     
     Write-Host "[*] Güncellemeler kontrol ediliyor..." -ForegroundColor Gray
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $apiUrl = "https://api.github.com/repos/oguska/netdiag/commits/main"
-        # API önbelleğini aşmak için bir yöntem kullanmıyoruz çünkü commit hash değişecek
-        $response = Invoke-RestMethod -Uri $apiUrl -Method Get -TimeoutSec 5
+        $response = Invoke-RestMethod -Uri $apiUrl -Method Get -TimeoutSec 3
         $latestCommitHash = $response.sha.Substring(0, 7)
         
         if ($CurrentCommit -ne $latestCommitHash) {
@@ -57,23 +59,19 @@ function Test-ScriptUpdate {
             $updateAns = Read-Host " -> Güncellensin mi? (E/H)"
             
             if ($updateAns -match '^[EeYy]') {
-                $rawUrl = "https://raw.githubusercontent.com/oguska/netdiag/main/netdiag.ps1?nocache=$(Get-Random)"
-                $rawContent = (Invoke-WebRequest -Uri $rawUrl -UseBasicParsing).Content
-                
-                # Yeni hash ile içeriği güncelle
+                $rawContent = (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/oguska/netdiag/main/netdiag.ps1" -UseBasicParsing).Content
                 $newContent = $rawContent -replace '(?<=CurrentCommit = ")([a-f0-9]{7})', $latestCommitHash
-                
                 $newContent | Out-File -FilePath $PSCommandPath -Encoding utf8 -Force
-                Write-Host "[+] Başarıyla güncellendi. Script yeniden başlatılıyor..." -ForegroundColor Green
+                Write-Host "[+] Başarıyla güncellendi. Yeniden başlatılıyor..." -ForegroundColor Green
                 & $PSCommandPath
                 Exit
             }
         } else {
-            # İşte eksik olan kısım: Güncelse kullanıcıya bunu bildir
+            # GÜNCELSE BU MESAJ ÇIKACAK
             Write-Host "[+] Script güncel (Hash: $CurrentCommit)." -ForegroundColor Green
         }
     } catch {
-        Write-Host "[-] Güncelleme kontrolü yapılamadı: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "[-] Güncelleme kontrolü başarısız." -ForegroundColor Red
     }
 }
 # --- İNTERAKTİF GİRDİ YÖNETİMİ ---
