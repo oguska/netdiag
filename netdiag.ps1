@@ -60,7 +60,12 @@ $Script:EnglishTranslations = [ordered]@{
     'Script güncel'='Script is up to date'
     'Yeni sürüm bulundu'='New version found'
     'Güncellensin mi?'='Update now?'
-    'Güncellendi; aynı parametrelerle yeniden başlatılıyor.'='Updated; restarting with the same parameters.'
+    'Güncellendi; script aynı terminal oturumunda yeniden başlatılıyor.'='Updated; restarting the script in the current terminal session.'
+    'Script aynı terminalde yeniden başlatılamadı.'='The script could not be restarted in the current terminal.'
+    'Script otomatik yeniden başlatılamadı.'='The script could not be restarted automatically.'
+    'Yeni sürümü manuel başlatın'='Start the new version manually'
+    'Yeniden başlatma komutu'='Restart command'
+
     'Kontrol başarısız'='Update check failed'
     'Geçersiz commit yanıtı.'='Invalid commit response.'
     'İndirilen içerik PowerShell scripti görünmüyor.'='Downloaded content does not appear to be a PowerShell script.'
@@ -428,7 +433,7 @@ function Test-TcpPort {
     } finally { $sw.Stop();$client.Close();$client.Dispose() }
 }
 function Test-ScriptUpdate {
-    Write-Host '[*] Güncellemeler kontrol ediliyor...' -ForegroundColor Gray
+    Write-Host "[*] $(ConvertTo-LocalizedText 'Güncellemeler kontrol ediliyor')..." -ForegroundColor Gray
     try {
         [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
         $headers=@{'User-Agent'='NetDiag-PowerShell'}
@@ -452,13 +457,25 @@ function Test-ScriptUpdate {
             [Management.Automation.Language.Parser]::ParseFile($tempFile,[ref]$tokens,[ref]$parseErrors)|Out-Null
             if ($parseErrors.Count -gt 0) { throw "Yeni sürüm parse doğrulamasından geçemedi: $($parseErrors[0].Message)" }
             Copy-Item $tempFile $PSCommandPath -Force
-            Write-Status UPDATE 'Güncellendi; aynı parametrelerle yeniden başlatılıyor.' Green
-            $restart=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath,'-Target',$Target,'-Port',[string]$Port,'-ScanLevel',$ScanLevel,'-HopPingCount',[string]$HopPingCount,'-JMeterThreads',[string]$JMeterThreads,'-JMeterTotalRequests',[string]$JMeterTotalRequests,'-TcpTimeoutMs',[string]$TcpTimeoutMs,'-HttpTimeoutSec',[string]$HttpTimeoutSec,'-Language',$Script:LanguageCode)
-            if ($JMeterAssertText) {$restart+=@('-JMeterAssertText',$JMeterAssertText)}
-            if ($JMeterCsvPath) {$restart+=@('-JMeterCsvPath',$JMeterCsvPath)}
-            if ($ExportHtmlPath) {$restart+=@('-ExportHtmlPath',$ExportHtmlPath)}
-            Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $restart
-            exit
+            Write-Status UPDATE 'Güncellendi; script aynı terminal oturumunda yeniden başlatılıyor.' Green
+
+            # Invoke the updated script in the CURRENT PowerShell host.
+            # Do not use Start-Process: it opens a separate pwsh/powershell console window
+            # instead of continuing in the active Windows Terminal tab.
+            $restartParameters = @{
+                Language = $Script:LanguageCode
+            }
+
+            try {
+                & $PSCommandPath @restartParameters
+                exit
+            }
+            catch {
+                Write-Status UPDATE (ConvertTo-LocalizedText "Script aynı terminalde yeniden başlatılamadı: $($_.Exception.Message)") Red
+                Write-Host (ConvertTo-LocalizedText 'Yeni sürümü manuel başlatın') -ForegroundColor Yellow
+                Write-Host "$(ConvertTo-LocalizedText 'Yeniden başlatma komutu'): & `"$PSCommandPath`" -Language $Script:LanguageCode" -ForegroundColor Yellow
+                return
+            }
         } finally { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
     } catch { Write-Status UPDATE "Kontrol başarısız: $($_.Exception.Message)" Yellow }
 }
