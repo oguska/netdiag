@@ -187,8 +187,7 @@ $ReportData = [ordered]@{}
 $AdvisorNotes = [System.Collections.Generic.List[string]]::new()
 $AnalysisSummaryText = [System.Text.StringBuilder]::new()
 
-$ReportData["Script_Version"] = "v$ScriptVersion"
-$ReportData["Target"] = $Target
+$ReportData["Script_Version"] = "Commit: $CurrentCommit"$ReportData["Target"] = $Target
 $ReportData["Port"] = $Port
 $ReportData["ScanLevel"] = $ScanLevel
 $ReportData["Timestamp"] = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
