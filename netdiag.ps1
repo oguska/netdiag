@@ -80,7 +80,7 @@ function Test-ScriptUpdate {
 if ([string]::IsNullOrWhiteSpace($Target)) {
     Clear-Host
     Write-Host "=================================================================================================" -ForegroundColor Cyan
-    Write-Host "NetDiag - An network diagnostic, JMeter load testing, hardware inventory script ($CurrentCommit)          " -ForegroundColor Cyan
+    Write-Host "NetDiag - A network diagnostic, JMeter load testing, hardware inventory script ($CurrentCommit)          " -ForegroundColor Cyan
     Write-Host "=================================================================================================" -ForegroundColor Cyan
     Write-Host ""
     
