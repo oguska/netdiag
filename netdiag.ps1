@@ -40,47 +40,47 @@ param (
     [switch]$CheckUpdate
 )
 
-# --- SABİTLER VE SÜRÜM BİLGİSİ ---
-$ScriptVersion = "7.3"
 $GithubRawUrl = "https://raw.githubusercontent.com/oguska/netdiag/main/netdiag.ps1"
 
-# --- OTOMATİK SÜRÜM KONTROLÜ (AUTO-UPDATE CHECK) ---
+# --- OTOMATİK SÜRÜM KONTROLÜ (COMMIT HASH TABANLI) ---
 function Test-ScriptUpdate {
+    # Scriptin içindeki sabit değişken
+    $CurrentCommit = "d33d9f4" # <-- Burası scriptin içine hardcoded yazılacak ve her güncellemede güncellenecek
+    
     Write-Host "[*] GitHub üzerinden güncel sürüm kontrol ediliyor..." -ForegroundColor Gray
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $remoteScriptContent = (Invoke-WebRequest -Uri $GithubRawUrl -UseBasicParsing -TimeoutSec 3).Content
+        $apiUrl = "https://api.github.com/repos/oguska/netdiag/commits/main"
+        $headers = @{ "Accept" = "application/vnd.github.v3+json" }
         
-        if ($remoteScriptContent -match '\$ScriptVersion\s*=\s*"([^"]+)"') {
-            $remoteVersion = $Matches[1]
-            if ([version]$remoteVersion -gt [version]$ScriptVersion) {
-                Write-Host "`n=========================================================================" -ForegroundColor Yellow
-                Write-Host " [!] DİKKAT: netdiag için yeni bir sürüm mevcut! (Mevcut: v$ScriptVersion -> Son: v$remoteVersion)" -ForegroundColor Yellow
-                Write-Host "=========================================================================" -ForegroundColor Yellow
-                $updateAns = Read-Host " -> Scripti şimdi otomatik güncelleyip yeniden başlatmak ister misiniz? (E/H)"
-                if ($updateAns -match '^[EeYy]') {
-                    $currentScriptPath = $MyInvocation.MyCommand.Path
-                    if (-not $currentScriptPath) { $currentScriptPath = $PSCommandPath }
-                    if ($currentScriptPath) {
-                        $remoteScriptContent | Out-File -FilePath $currentScriptPath -Encoding utf8
-                        Write-Host "[+] Script başarıyla güncellendi! Lütfen tekrar çalıştırın." -ForegroundColor Green
-                        Exit
-                    } else {
-                        Write-Warning "Script dosya yolu algılanamadı, lütfen GitHub'dan manuel güncelleyin."
-                    }
-                }
-            } else {
-                Write-Host "[+] Script güncel (v$ScriptVersion)." -ForegroundColor Green
+        $response = Invoke-RestMethod -Uri $apiUrl -Headers $headers -Method Get -TimeoutSec 3
+        $latestCommitHash = $response.sha.Substring(0, 7)
+        
+        if ($CurrentCommit -ne $latestCommitHash) {
+            Write-Host "`n=========================================================================" -ForegroundColor Yellow
+            Write-Host " [!] DİKKAT: Yeni sürüm bulundu! (Local: $CurrentCommit -> Remote: $latestCommitHash)" -ForegroundColor Yellow
+            Write-Host "=========================================================================" -ForegroundColor Yellow
+            
+            $updateAns = Read-Host " -> Otomatik güncelleyip yeniden başlatılsın mı? (E/H)"
+            if ($updateAns -match '^[EeYy]') {
+                $rawContent = (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/oguska/netdiag/main/netdiag.ps1" -UseBasicParsing).Content
+                
+                # ÖNEMLİ: Scripti güncellerken hash değerini de yeni hash ile değiştiren küçük bir regex operasyonu
+                $newContent = $rawContent -replace '(?<=CurrentCommit = ")([a-f0-9]{7})', $latestCommitHash
+                
+                $currentScriptPath = $PSCommandPath
+                $newContent | Out-File -FilePath $currentScriptPath -Encoding utf8
+                
+                Write-Host "[+] Script güncellendi ($latestCommitHash). Yeniden başlatılıyor..." -ForegroundColor Green
+                & $currentScriptPath
+                Exit
             }
+        } else {
+            Write-Host "[+] Script güncel (Hash: $CurrentCommit)." -ForegroundColor Green
         }
     } catch {
-        Write-Host "[-] Sürüm kontrolü yapılamadı (İnternet bağlantısı yok veya GitHub erişilemiyor)." -ForegroundColor DarkGray
+        Write-Host "[-] Sürüm kontrolü yapılamadı." -ForegroundColor DarkGray
     }
-}
-
-if ($CheckUpdate) {
-    Test-ScriptUpdate
-    Exit
 }
 
 # --- İNTERAKTİF GİRDİ YÖNETİMİ ---
