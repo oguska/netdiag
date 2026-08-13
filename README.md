@@ -520,10 +520,6 @@ Warm-up requests are excluded from the main result set.
 
 ---
 
-## License
-
-Add the repository's chosen license information here.
-
 ## Contributing
 
 Issues and pull requests are welcome. When reporting a problem, include:
