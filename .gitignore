@@ -1,0 +1,3 @@
+# Generated NetDiag HTML reports
+*.html
+NetDiag_NetworkReport_*.html
