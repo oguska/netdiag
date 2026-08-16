@@ -182,6 +182,15 @@ $Script:EnglishTranslations = [ordered]@{
     'HTTP Yük Testi Özeti'='HTTP Load Test Summary'
     'HTTP Gecikme Yüzdelikleri'='HTTP Latency Percentiles'
     'Hop Bazlı Jitter Dağılımı'='Hop-by-Hop Jitter Distribution'
+    'Hop Bazlı Ortalama Gecikme'='Hop-by-Hop Average Latency'
+    'Ağ RTT Dağılımı'='Network RTT Distribution'
+    'En Düşük'='Minimum'
+    'En Yüksek'='Maximum'
+    'HTTP Zamanlama Dağılımı'='HTTP Timing Breakdown'
+    'Header / TTFB'='Header / TTFB'
+    'İndirme'='Download'
+    'Sertifika Geçerlilik Süresi'='Certificate Validity'
+    'Gün'='Days'
     'Başarılı İstekler'='Successful Requests'
     'Başarısız İstekler'='Failed Requests'
     'Ortalama RTT'='Average RTT'
@@ -3358,6 +3367,13 @@ if($ExportHtmlPath){
     $httpSummaryTitle = ConvertTo-LocalizedText 'HTTP Yük Testi Özeti'
     $httpPercentileTitle = ConvertTo-LocalizedText 'HTTP Gecikme Yüzdelikleri'
     $hopJitterTitle = ConvertTo-LocalizedText 'Hop Bazlı Jitter Dağılımı'
+    $hopLatencyTitle = ConvertTo-LocalizedText 'Hop Bazlı Ortalama Gecikme'
+    $rttScaleTitle = ConvertTo-LocalizedText 'Ağ RTT Dağılımı'
+    $httpStatusTitle = ConvertTo-LocalizedText 'HTTP Durum Kodu Dağılımı'
+    $httpErrorTitle = ConvertTo-LocalizedText 'HTTP Hata Tipi Dağılımı'
+    $httpTimingTitle = ConvertTo-LocalizedText 'HTTP Zamanlama Dağılımı'
+    $securityGaugeTitle = ConvertTo-LocalizedText 'Güvenlik Başlığı Puanı'
+    $certGaugeTitle = ConvertTo-LocalizedText 'Sertifika Geçerlilik Süresi'
     $notEnoughDataText = ConvertTo-LocalizedText 'Grafik oluşturmak için yeterli veri yok.'
 
     $infographicHtml = New-Object Text.StringBuilder
@@ -3376,6 +3392,24 @@ if($ExportHtmlPath){
             [void]$infographicHtml.Append("<div class='kpi-card'><div class='kpi-label'>$(ConvertTo-HtmlSafe $card.Label)</div><div class='kpi-value'>$(ConvertTo-HtmlSafe $card.Value)</div><div class='kpi-accent' style='background:$($card.Color)'></div></div>")
         }
         [void]$infographicHtml.Append('</div></div>')
+
+        # Network RTT distribution scale meter
+        $rttMinVal = [double]$destinationPingMetrics.Min
+        $rttAvgVal = [double]$destinationPingMetrics.Average
+        $rttP95Val = [double]$destinationPingMetrics.P95
+        $rttSpan = $rttP95Val - $rttMinVal
+        if ($rttSpan -lt 1) { $rttSpan = 1 }
+        $rttAvgPos = [Math]::Round((($rttAvgVal - $rttMinVal) / $rttSpan) * 100,1)
+        $rttP95Pos = [Math]::Round((($rttP95Val - $rttMinVal) / $rttSpan) * 100,1)
+        if ($rttAvgPos -lt 0) { $rttAvgPos = 0 }; if ($rttAvgPos -gt 100) { $rttAvgPos = 100 }
+        if ($rttP95Pos -lt 0) { $rttP95Pos = 0 }; if ($rttP95Pos -gt 100) { $rttP95Pos = 100 }
+        $zoneGoodEnd = [Math]::Round((([Math]::Max(0,50 - $rttMinVal)) / $rttSpan) * 100,1)
+        $zoneFairEnd = [Math]::Round((([Math]::Max(0,150 - $rttMinVal)) / $rttSpan) * 100,1)
+        if ($zoneGoodEnd -lt 0) { $zoneGoodEnd = 0 }; if ($zoneGoodEnd -gt 100) { $zoneGoodEnd = 100 }
+        if ($zoneFairEnd -lt $zoneGoodEnd) { $zoneFairEnd = $zoneGoodEnd }; if ($zoneFairEnd -gt 100) { $zoneFairEnd = 100 }
+        $avgRttLabel = ConvertTo-LocalizedText 'Ortalama RTT'
+        $p95RttLabel = ConvertTo-LocalizedText 'Hedef p95 RTT'
+        [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$rttScaleTitle</div><div class='scale-track'><div class='scale-zones'><div class='scale-zone scale-good' style='width:$zoneGoodEnd%'></div><div class='scale-zone scale-fair' style='left:$zoneGoodEnd%;width:$([Math]::Round($zoneFairEnd - $zoneGoodEnd,1))%'></div><div class='scale-zone scale-poor' style='left:$zoneFairEnd%;width:$([Math]::Round(100 - $zoneFairEnd,1))%'></div></div><div class='scale-marker scale-marker-avg' style='left:$rttAvgPos%'><span>$(ConvertTo-HtmlSafe $avgRttLabel) $([Math]::Round($rttAvgVal,1)) ms</span></div><div class='scale-marker scale-marker-p95' style='left:$rttP95Pos%'><span>$(ConvertTo-HtmlSafe $p95RttLabel) $([Math]::Round($rttP95Val,1)) ms</span></div></div><div class='scale-labels'><span>$(ConvertTo-LocalizedText 'En Düşük') $([Math]::Round($rttMinVal,1)) ms</span><span>$(ConvertTo-LocalizedText 'En Yüksek') $([Math]::Round($rttP95Val,1)) ms</span></div></div>")
     }
 
     # HTTP KPI cards and success/failure donut
@@ -3416,9 +3450,77 @@ if($ExportHtmlPath){
             [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$httpPercentileTitle</div>")
             foreach ($item in $percentileItems) {
                 $barWidth = if ($maxPercentileValue -gt 0) { [Math]::Round(([double]$item.Value / $maxPercentileValue) * 100,1) } else { 0 }
-                [void]$infographicHtml.Append("<div class='bar-row'><div class='bar-label'>$($item.Label)</div><div class='bar-track'><div class='bar-fill' style='width:$barWidth%'></div></div><div class='bar-value'>$($item.Value) ms</div></div>")
+                $barSeverityClass = if ([double]$item.Value -lt 200) { 'bar-fill-good' } elseif ([double]$item.Value -le 1000) { 'bar-fill-fair' } else { 'bar-fill-poor' }
+                [void]$infographicHtml.Append("<div class='bar-row'><div class='bar-label'>$($item.Label)</div><div class='bar-track'><div class='bar-fill $barSeverityClass' style='width:$barWidth%'></div></div><div class='bar-value'>$($item.Value) ms</div></div>")
             }
             [void]$infographicHtml.Append('</div>')
+        }
+
+        # HTTP status code distribution (stacked bar)
+        $statusSegments = New-Object 'System.Collections.Generic.List[object]'
+        if ($ReportData.JMeter_Status_Distribution) {
+            foreach ($statusMatch in [regex]::Matches([string]$ReportData.JMeter_Status_Distribution,'HTTP\s+(\d{3}):\s*(\d+)')) {
+                $statusCode = $statusMatch.Groups[1].Value
+                $statusCount = [int]$statusMatch.Groups[2].Value
+                $statusColor = if ($statusCode -match '^2') { '#107c10' } elseif ($statusCode -match '^3') { '#0078d4' } elseif ($statusCode -match '^4') { '#f7630c' } else { '#d13438' }
+                $statusSegments.Add(@{ Code=$statusCode; Count=$statusCount; Color=$statusColor }) | Out-Null
+            }
+        }
+        if ($statusSegments.Count -gt 0 -and $totalRequestCount -gt 0) {
+            $statusHtml = "<div class='chart-panel'><div class='chart-title'>$httpStatusTitle</div><div class='stack-bar'>"
+            $statusLegend = "<div class='legend-list'>"
+            foreach ($statusItem in ($statusSegments | Sort-Object { [int]$_.Code })) {
+                $segPct = [Math]::Round(($statusItem.Count / $totalRequestCount) * 100,1)
+                $statusHtml += "<div class='stack-seg' style='background:$($statusItem.Color);width:$segPct%' title='HTTP $($statusItem.Code): $($statusItem.Count)'></div>"
+                $statusLegend += "<div class='legend-item'><span class='legend-dot' style='background:$($statusItem.Color)'></span>HTTP $($statusItem.Code): $($statusItem.Count) ($segPct%)</div>"
+            }
+            $statusHtml += '</div>'
+            $statusLegend += '</div>'
+            [void]$infographicHtml.Append($statusHtml + $statusLegend + '</div>')
+        }
+
+        # HTTP error type distribution (stacked bar)
+        $errorSegments = New-Object 'System.Collections.Generic.List[object]'
+        if ($ReportData.JMeter_Error_Distribution -and $failedRequestCount -gt 0) {
+            foreach ($errMatch in [regex]::Matches([string]$ReportData.JMeter_Error_Distribution,'([^:]+):\s*(\d+)')) {
+                $errName = $errMatch.Groups[1].Value.Trim()
+                $errCount = [int]$errMatch.Groups[2].Value
+                $errColor = '#8a2be2'
+                if ($errName -match 'Timeout') { $errColor = '#d13438' }
+                elseif ($errName -match 'HttpStatus|HTTP') { $errColor = '#f7630c' }
+                elseif ($errName -match 'Assert') { $errColor = '#c50f1f' }
+                $errorSegments.Add(@{ Name=$errName; Count=$errCount; Color=$errColor }) | Out-Null
+            }
+        }
+        if ($errorSegments.Count -gt 0) {
+            $errorHtml = "<div class='chart-panel'><div class='chart-title'>$httpErrorTitle</div><div class='stack-bar'>"
+            $errorLegend = "<div class='legend-list'>"
+            foreach ($errItem in ($errorSegments | Sort-Object { $_.Count } -Descending)) {
+                $errPct = [Math]::Round(($errItem.Count / [double]$failedRequestCount) * 100,1)
+                $errorHtml += "<div class='stack-seg' style='background:$($errItem.Color);width:$errPct%' title='$(ConvertTo-HtmlSafe $errItem.Name): $($errItem.Count)'></div>"
+                $errorLegend += "<div class='legend-item'><span class='legend-dot' style='background:$($errItem.Color)'></span>$(ConvertTo-HtmlSafe $errItem.Name): $($errItem.Count) ($errPct%)</div>"
+            }
+            $errorHtml += '</div>'
+            $errorLegend += '</div>'
+            [void]$infographicHtml.Append($errorHtml + $errorLegend + '</div>')
+        }
+
+        # HTTP timing breakdown: header (TTFB) vs download
+        $avgHeaderMs = 0.0; $avgDownloadMs = 0.0
+        $headerTimeMatch = [regex]::Match([string]$ReportData.JMeter_Avg_Header_Time,'[0-9]+(?:[\.,][0-9]+)?')
+        if ($headerTimeMatch.Success) {
+            [double]::TryParse(($headerTimeMatch.Value -replace ',','.'),[Globalization.NumberStyles]::Any,[Globalization.CultureInfo]::InvariantCulture,[ref]$avgHeaderMs) | Out-Null
+        }
+        $downloadTimeMatch = [regex]::Match([string]$ReportData.JMeter_Avg_Download_Time,'[0-9]+(?:[\.,][0-9]+)?')
+        if ($downloadTimeMatch.Success) {
+            [double]::TryParse(($downloadTimeMatch.Value -replace ',','.'),[Globalization.NumberStyles]::Any,[Globalization.CultureInfo]::InvariantCulture,[ref]$avgDownloadMs) | Out-Null
+        }
+        $totalTimingMs = $avgHeaderMs + $avgDownloadMs
+        if ($totalTimingMs -gt 0) {
+            $headerPct = [Math]::Round(($avgHeaderMs / $totalTimingMs) * 100,1)
+            $downloadPct = [Math]::Round(($avgDownloadMs / $totalTimingMs) * 100,1)
+            $timingHtml = "<div class='chart-panel'><div class='chart-title'>$httpTimingTitle</div><div class='stack-bar'><div class='stack-seg' style='background:#0078d4;width:$headerPct%'></div><div class='stack-seg' style='background:#00b7c3;width:$downloadPct%'></div></div><div class='legend-list'><div class='legend-item'><span class='legend-dot' style='background:#0078d4'></span>$(ConvertTo-LocalizedText 'Header / TTFB'): $([Math]::Round($avgHeaderMs,1)) ms ($headerPct%)</div><div class='legend-item'><span class='legend-dot' style='background:#00b7c3'></span>$(ConvertTo-LocalizedText 'İndirme'): $([Math]::Round($avgDownloadMs,1)) ms ($downloadPct%)</div></div></div>"
+            [void]$infographicHtml.Append($timingHtml)
         }
     }
 
@@ -3449,6 +3551,62 @@ if($ExportHtmlPath){
             [void]$infographicHtml.Append("<div class='bar-row'><div class='bar-label' title='$(ConvertTo-HtmlSafe $hopLabel)'>$(ConvertTo-HtmlSafe $hopLabel)</div><div class='bar-track'><div class='bar-fill bar-fill-jitter' style='width:$barWidth%'></div></div><div class='bar-value'>$($item.Value) ms</div></div>")
         }
         [void]$infographicHtml.Append('</div>')
+    }
+
+    # Hop average latency distribution
+    $hopLatencyItems = @(
+        $RouteReportRows |
+            Where-Object { $_.Avg -and $_.Avg -ne 'N/A' } |
+            ForEach-Object {
+                $numericLatency = 0.0
+                $match = [regex]::Match([string]$_.Avg,'[0-9]+(?:[\.,][0-9]+)?')
+                if ($match.Success) {
+                    [double]::TryParse(
+                        ($match.Value -replace ',','.'),
+                        [Globalization.NumberStyles]::Any,
+                        [Globalization.CultureInfo]::InvariantCulture,
+                        [ref]$numericLatency
+                    ) | Out-Null
+                }
+                [pscustomobject]@{ Hop=$_.Hop; IP=$_.IP; Value=$numericLatency }
+            }
+    )
+    if ($hopLatencyItems.Count -gt 0) {
+        $maxHopLatency = ($hopLatencyItems | Measure-Object Value -Maximum).Maximum
+        [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$hopLatencyTitle</div>")
+        foreach ($item in $hopLatencyItems) {
+            $barWidth = if ($maxHopLatency -gt 0) { [Math]::Round(($item.Value / $maxHopLatency) * 100,1) } else { 0 }
+            $hopLabel = "Hop $($item.Hop) · $($item.IP)"
+            [void]$infographicHtml.Append("<div class='bar-row'><div class='bar-label' title='$(ConvertTo-HtmlSafe $hopLabel)'>$(ConvertTo-HtmlSafe $hopLabel)</div><div class='bar-track'><div class='bar-fill' style='width:$barWidth%'></div></div><div class='bar-value'>$($item.Value) ms</div></div>")
+        }
+        [void]$infographicHtml.Append('</div>')
+    }
+
+    # Security header score gauge
+    $secScoreMatch = [regex]::Match([string]$ReportData.Security_Header_Score,'(\d+)/(\d+)')
+    if ($secScoreMatch.Success) {
+        $secPass = [int]$secScoreMatch.Groups[1].Value
+        $secTotal = [int]$secScoreMatch.Groups[2].Value
+        if ($secTotal -gt 0) {
+            $secPct = [Math]::Round(($secPass / [double]$secTotal) * 100,1)
+            $secColor = if ($secPct -ge 75) { '#107c10' } elseif ($secPct -gt 0) { '#f7630c' } else { '#d13438' }
+            [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$securityGaugeTitle</div><div class='gauge-wrap'><div class='gauge' style='background:conic-gradient($secColor 0% $secPct%,#edf2f7 $secPct% 100%)'><div class='gauge-center'>$secPass/$secTotal<br><span style='font-size:11px;font-weight:500'>$secPct%</span></div></div><div class='legend-list'><div class='legend-item'><span class='legend-dot' style='background:$secColor'></span>$secPass/6 $(ConvertTo-LocalizedText 'Güvenlik Başlığı Puanı')</div></div></div></div>")
+        }
+    }
+
+    # Certificate validity gauge
+        $certNotBefore = $null; $certNotAfter = $null
+        if ($ReportData.HTTPS_Certificate_NotBefore -and $ReportData.HTTPS_Certificate_NotAfter) {
+            try { $certNotBefore = [datetime]::ParseExact([string]$ReportData.HTTPS_Certificate_NotBefore,'yyyy-MM-dd HH:mm:ss',[Globalization.CultureInfo]::InvariantCulture) } catch { $certNotBefore = $null }
+            try { $certNotAfter = [datetime]::ParseExact([string]$ReportData.HTTPS_Certificate_NotAfter,'yyyy-MM-dd HH:mm:ss',[Globalization.CultureInfo]::InvariantCulture) } catch { $certNotAfter = $null }
+        }
+    if ($null -ne $certNotBefore -and $null -ne $certNotAfter -and $certNotAfter -gt $certNotBefore) {
+        $certTotalDays = [Math]::Max(1,($certNotAfter - $certNotBefore).TotalDays)
+        $certRemainingDays = [Math]::Max(0,[Math]::Round(($certNotAfter - (Get-Date)).TotalDays))
+        $certRemainingPct = [Math]::Round(([Math]::Max(0,($certNotAfter - (Get-Date)).TotalDays) / $certTotalDays) * 100,1)
+        if ($certRemainingPct -gt 100) { $certRemainingPct = 100 }
+        $certColor = if ($certRemainingPct -gt 30) { '#107c10' } elseif ($certRemainingPct -gt 10) { '#f7630c' } else { '#d13438' }
+        [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$certGaugeTitle</div><div class='gauge-wrap'><div class='gauge' style='background:conic-gradient($certColor 0% $certRemainingPct%,#edf2f7 $certRemainingPct% 100%)'><div class='gauge-center'>$([Math]::Round($certRemainingDays,0))<br><span style='font-size:11px;font-weight:500'>$(ConvertTo-LocalizedText 'Gün')</span></div></div><div class='legend-list'><div class='legend-item'><span class='legend-dot' style='background:$certColor'></span>$certRemainingPct% $(ConvertTo-LocalizedText 'Sertifika Geçerlilik Süresi')</div></div></div></div>")
     }
 
     if ((-not $networkQualityAvailable) -and (-not $appMetricsAvailable) -and $jitterItems.Count -eq 0) {
@@ -3504,7 +3662,7 @@ if($ExportHtmlPath){
 </footer>
 "@
     $html=@"
-<!doctype html><html lang='$htmlLanguage'><head><meta charset='utf-8'><title>$htmlTitle</title><style>body{font-family:Segoe UI,Arial;background:#f0f2f5;padding:25px;color:#333}.container{max-width:1200px;margin:auto;background:#fff;padding:30px;border-radius:10px;box-shadow:0 4px 20px #0001}h2{color:#005a9e;border-bottom:2px solid #005a9e;padding-bottom:10px}.subtitle{color:#5f6368;margin:-2px 0 18px 0;font-size:14px}table{border-collapse:collapse;width:100%;margin-top:12px;font-size:14px}th,td{padding:10px 14px;border:1px solid #e1e4e8;text-align:left}th{background:#0078d4;color:#fff}.analysis{background:#ebf8ff;border-left:5px solid #0078d4;padding:18px}.advisor{background:#fff8e1;border-left:5px solid #ffc107;padding:15px;margin-top:15px}.advisor-item{margin:6px 0}.websec-section{margin-top:28px}.websec-summary{margin:10px 0 14px 0;padding:12px 16px;background:#f8fafc;border:1px solid #e1e4e8;border-radius:8px;font-size:14px}.metric-group-title{margin-top:26px;font-size:15px;font-weight:700;color:#005a9e;border-bottom:1px solid #e1e4e8;padding-bottom:6px}.metric-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:12px}.metric-item{background:#f8fafc;border:1px solid #e1e4e8;border-radius:8px;padding:10px 14px}.metric-item-wide{grid-column:1/-1}.metric-label{font-size:11px;font-weight:700;color:#5f6368;text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px}.metric-value{font-size:13px;color:#1a2733;word-break:break-word}.badge{padding:4px 9px;border-radius:4px;font-size:12px;font-weight:bold;display:inline-block}.badge-open{background:#d4edda;color:#155724}.badge-closed{background:#f8d7da;color:#721c24}.badge-drop{background:#e2e3e5;color:#383d41}.badge-warning{background:#fff3cd;color:#856404;border:1px solid #ffeeba}.success{background:#e6f4ea}.warning{background:#fef7e0}.danger{background:#fce8e6}.failed{background:#f1f3f4;color:#666}.report-footer{margin-top:28px;padding-top:18px;border-top:1px solid #dfe3e8;color:#5f6368;font-size:13px;line-height:1.6;text-align:center}.report-footer a{color:#0078d4;text-decoration:none;font-weight:600}.report-footer a:hover{text-decoration:underline}.footer-brand{color:#005a9e;font-weight:700}.infographic-section{margin-top:28px}.dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:14px 0 20px}.kpi-card{background:linear-gradient(145deg,#ffffff,#f6f9fc);border:1px solid #dce6f0;border-radius:10px;padding:15px;box-shadow:0 2px 8px #0000000d}.kpi-label{font-size:12px;color:#667085;text-transform:uppercase;letter-spacing:.35px}.kpi-value{font-size:25px;font-weight:700;color:#12344d;margin-top:6px}.kpi-accent{height:4px;border-radius:4px;background:#0078d4;margin-top:12px}.chart-panel{background:#fff;border:1px solid #dce6f0;border-radius:10px;padding:16px;margin:14px 0;box-shadow:0 2px 8px #0000000d}.chart-title{font-size:16px;font-weight:700;color:#12344d;margin-bottom:14px}.bar-row{display:grid;grid-template-columns:minmax(92px,145px) 1fr minmax(68px,95px);gap:10px;align-items:center;margin:9px 0}.bar-label{font-size:12px;color:#475467;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar-track{height:13px;background:#edf2f7;border-radius:7px;overflow:hidden}.bar-fill{height:100%;min-width:2px;border-radius:7px;background:linear-gradient(90deg,#0078d4,#35a7ff)}.bar-fill-jitter{background:linear-gradient(90deg,#ffb900,#f7630c)}.bar-value{font-size:12px;font-weight:600;color:#344054;text-align:right}.donut-wrap{display:flex;gap:22px;align-items:center;flex-wrap:wrap}.donut{width:132px;height:132px;border-radius:50%;display:grid;place-items:center;position:relative}.donut:after{content:'';width:82px;height:82px;background:#fff;border-radius:50%;position:absolute}.donut-center{position:relative;z-index:1;text-align:center;font-weight:700;color:#12344d}.legend-item{display:flex;align-items:center;gap:8px;margin:8px 0;color:#475467;font-size:13px}.legend-dot{width:11px;height:11px;border-radius:50%;display:inline-block}.legend-success{background:#107c10}.legend-failed{background:#d13438}.chart-note{color:#667085;font-size:13px;font-style:italic}.privacy-details{margin:16px auto 0;max-width:920px;text-align:left;border:1px solid #dfe3e8;border-radius:8px;background:#f8fafc}.privacy-details summary{cursor:pointer;padding:10px 13px;color:#475467;font-weight:600;list-style-position:inside}.privacy-details[open] summary{border-bottom:1px solid #dfe3e8}.privacy-content{padding:12px 15px;color:#475467;font-size:12px;line-height:1.65}.privacy-content p{margin:7px 0}.privacy-content strong{color:#12344d}.privacy-links{margin-top:10px}.privacy-links a{margin-right:14px}</style></head><body><div class='container'><h2>$(ConvertTo-LocalizedText 'NetDiag Ağ, Sistem ve Uygulama Teşhis Raporu')</h2><div class='subtitle'>$(ConvertTo-LocalizedText 'Hedef'): $(ConvertTo-HtmlSafe $Target) | Port: $Port | $(ConvertTo-LocalizedText 'Tarama'): $(ConvertTo-HtmlSafe $ScanLevel)</div><div class='analysis'>$localizedAnalysis</div><div class='advisor'><h3>$(ConvertTo-LocalizedText 'Önerilen Aksiyonlar ve Sistem Uyarıları')</h3>$notes</div><h3>$(ConvertTo-LocalizedText 'Genel Sistem, Ağ ve Uygulama Metrikleri')</h3>$metricsGridHtml$infographicHtml$routeSection$webSecSection$footerHtml</div></body></html>
+<!doctype html><html lang='$htmlLanguage'><head><meta charset='utf-8'><title>$htmlTitle</title><style>body{font-family:Segoe UI,Arial;background:#f0f2f5;padding:25px;color:#333}.container{max-width:1200px;margin:auto;background:#fff;padding:30px;border-radius:10px;box-shadow:0 4px 20px #0001}h2{color:#005a9e;border-bottom:2px solid #005a9e;padding-bottom:10px}.subtitle{color:#5f6368;margin:-2px 0 18px 0;font-size:14px}table{border-collapse:collapse;width:100%;margin-top:12px;font-size:14px}th,td{padding:10px 14px;border:1px solid #e1e4e8;text-align:left}th{background:#0078d4;color:#fff}.analysis{background:#ebf8ff;border-left:5px solid #0078d4;padding:18px}.advisor{background:#fff8e1;border-left:5px solid #ffc107;padding:15px;margin-top:15px}.advisor-item{margin:6px 0}.websec-section{margin-top:28px}.websec-summary{margin:10px 0 14px 0;padding:12px 16px;background:#f8fafc;border:1px solid #e1e4e8;border-radius:8px;font-size:14px}.metric-group-title{margin-top:26px;font-size:15px;font-weight:700;color:#005a9e;border-bottom:1px solid #e1e4e8;padding-bottom:6px}.metric-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:12px}.metric-item{background:#f8fafc;border:1px solid #e1e4e8;border-radius:8px;padding:10px 14px}.metric-item-wide{grid-column:1/-1}.metric-label{font-size:11px;font-weight:700;color:#5f6368;text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px}.metric-value{font-size:13px;color:#1a2733;word-break:break-word}.badge{padding:4px 9px;border-radius:4px;font-size:12px;font-weight:bold;display:inline-block}.badge-open{background:#d4edda;color:#155724}.badge-closed{background:#f8d7da;color:#721c24}.badge-drop{background:#e2e3e5;color:#383d41}.badge-warning{background:#fff3cd;color:#856404;border:1px solid #ffeeba}.success{background:#e6f4ea}.warning{background:#fef7e0}.danger{background:#fce8e6}.failed{background:#f1f3f4;color:#666}.report-footer{margin-top:28px;padding-top:18px;border-top:1px solid #dfe3e8;color:#5f6368;font-size:13px;line-height:1.6;text-align:center}.report-footer a{color:#0078d4;text-decoration:none;font-weight:600}.report-footer a:hover{text-decoration:underline}.footer-brand{color:#005a9e;font-weight:700}.infographic-section{margin-top:28px}.dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:14px 0 20px}.kpi-card{background:linear-gradient(145deg,#ffffff,#f6f9fc);border:1px solid #dce6f0;border-radius:10px;padding:15px;box-shadow:0 2px 8px #0000000d}.kpi-label{font-size:12px;color:#667085;text-transform:uppercase;letter-spacing:.35px}.kpi-value{font-size:25px;font-weight:700;color:#12344d;margin-top:6px}.kpi-accent{height:4px;border-radius:4px;background:#0078d4;margin-top:12px}.chart-panel{background:#fff;border:1px solid #dce6f0;border-radius:10px;padding:16px;margin:14px 0;box-shadow:0 2px 8px #0000000d}.chart-title{font-size:16px;font-weight:700;color:#12344d;margin-bottom:14px}.bar-row{display:grid;grid-template-columns:minmax(92px,145px) 1fr minmax(68px,95px);gap:10px;align-items:center;margin:9px 0}.bar-label{font-size:12px;color:#475467;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar-track{height:13px;background:#edf2f7;border-radius:7px;overflow:hidden}.bar-fill{height:100%;min-width:2px;border-radius:7px;background:linear-gradient(90deg,#0078d4,#35a7ff)}.bar-fill-jitter{background:linear-gradient(90deg,#ffb900,#f7630c)}.bar-value{font-size:12px;font-weight:600;color:#344054;text-align:right}.donut-wrap{display:flex;gap:22px;align-items:center;flex-wrap:wrap}.donut{width:132px;height:132px;border-radius:50%;display:grid;place-items:center;position:relative}.donut:after{content:'';width:82px;height:82px;background:#fff;border-radius:50%;position:absolute}.donut-center{position:relative;z-index:1;text-align:center;font-weight:700;color:#12344d}.legend-item{display:flex;align-items:center;gap:8px;margin:8px 0;color:#475467;font-size:13px}.legend-dot{width:11px;height:11px;border-radius:50%;display:inline-block}.legend-success{background:#107c10}.legend-failed{background:#d13438}.scale-track{position:relative;height:22px;margin:30px 0 4px}.scale-zones{position:absolute;top:0;left:0;right:0;height:22px;border-radius:11px;overflow:hidden;background:#edf2f7}.scale-zone{position:absolute;top:0;bottom:0;height:100%}.scale-good{background:#107c10;opacity:.25}.scale-fair{background:#f7630c;opacity:.3}.scale-poor{background:#d13438;opacity:.32}.scale-marker{position:absolute;top:-22px;transform:translateX(-50%)}.scale-marker span{font-size:11px;font-weight:600;color:#344054;background:#fff;border:1px solid #dce6f0;border-radius:6px;padding:2px 6px;white-space:nowrap}.scale-marker:after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);width:2px;height:22px;background:#344054;opacity:.6}.scale-marker-avg:after{background:#0078d4;width:3px;opacity:.9}.scale-marker-p95:after{background:#d13438;width:3px;opacity:.9}.scale-labels{display:flex;justify-content:space-between;color:#667085;font-size:12px;margin-top:2px}.stack-bar{display:flex;height:26px;border-radius:7px;overflow:hidden;background:#edf2f7;margin:6px 0 12px}.stack-seg{height:100%;min-width:2px}.legend-list{margin-top:4px}.gauge-wrap{display:flex;gap:22px;align-items:center;flex-wrap:wrap}.gauge{width:132px;height:132px;border-radius:50%;display:grid;place-items:center;position:relative}.gauge:after{content:'';width:82px;height:82px;background:#fff;border-radius:50%;position:absolute}.gauge-center{position:relative;z-index:1;text-align:center;font-weight:700;color:#12344d}.bar-fill-good{background:linear-gradient(90deg,#107c10,#4ca84c)}.bar-fill-fair{background:linear-gradient(90deg,#f7630c,#ffb900)}.bar-fill-poor{background:linear-gradient(90deg,#d13438,#e2574c)}.chart-note{color:#667085;font-size:13px;font-style:italic}.privacy-details{margin:16px auto 0;max-width:920px;text-align:left;border:1px solid #dfe3e8;border-radius:8px;background:#f8fafc}.privacy-details summary{cursor:pointer;padding:10px 13px;color:#475467;font-weight:600;list-style-position:inside}.privacy-details[open] summary{border-bottom:1px solid #dfe3e8}.privacy-content{padding:12px 15px;color:#475467;font-size:12px;line-height:1.65}.privacy-content p{margin:7px 0}.privacy-content strong{color:#12344d}.privacy-links{margin-top:10px}.privacy-links a{margin-right:14px}</style></head><body><div class='container'><h2>$(ConvertTo-LocalizedText 'NetDiag Ağ, Sistem ve Uygulama Teşhis Raporu')</h2><div class='subtitle'>$(ConvertTo-LocalizedText 'Hedef'): $(ConvertTo-HtmlSafe $Target) | Port: $Port | $(ConvertTo-LocalizedText 'Tarama'): $(ConvertTo-HtmlSafe $ScanLevel)</div><div class='analysis'>$localizedAnalysis</div><div class='advisor'><h3>$(ConvertTo-LocalizedText 'Önerilen Aksiyonlar ve Sistem Uyarıları')</h3>$notes</div><h3>$(ConvertTo-LocalizedText 'Genel Sistem, Ağ ve Uygulama Metrikleri')</h3>$metricsGridHtml$infographicHtml$routeSection$webSecSection$footerHtml</div></body></html>
 "@
     $parent = Split-Path -Path $ExportHtmlPath -Parent
     if ($parent -and (-not (Test-Path -LiteralPath $parent))) {

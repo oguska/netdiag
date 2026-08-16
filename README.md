@@ -303,8 +303,14 @@ The HTML report includes responsive, dependency-free visual summaries built with
   - Error rate
   - Peak concurrency
 - Successful-versus-failed request donut visualization
-- HTTP p50, p75, p90, p95, and p99 horizontal bars
-- Hop-by-hop jitter distribution bars
+- HTTP p50, p75, p90, p95, and p99 horizontal bars (severity-colored)
+- Network RTT distribution scale with good/fair/poor zones and average/p95 markers
+- HTTP status-code distribution stacked bar with per-code legend
+- HTTP error-type distribution stacked bar (shown when failures exist)
+- HTTP timing breakdown (header/TTFB versus download) stacked bar
+- Security-header score conic gauge
+- SSL certificate remaining-validity conic gauge
+- Hop-by-hop jitter and average-latency distribution bars
 - Responsive card layout for desktop and narrow browser windows
 
 No external JavaScript, chart library, CDN asset, or image file is required. Charts are generated only when the required measurements exist; NetDiag does not fabricate missing values.
@@ -800,6 +806,7 @@ This information is not legal advice. Organizations should separately evaluate o
 
 ### Changed
 
+- Extended the HTML report infographics with new visualizations: a network RTT distribution scale (good/fair/poor zones with average and p95 markers), HTTP status-code and error-type distribution stacked bars, an HTTP timing breakdown (header/TTFB versus download), a security-header score conic gauge, an SSL certificate remaining-validity conic gauge, and hop-by-hop average-latency bars; latency percentile bars are now severity-colored.
 - Split the HTML report metric grid into three grouped sections (`General System Metrics`, `Network Metrics`, and `Application Metrics`) under the existing umbrella heading, with each group rendered in its own responsive card grid.
 - Extended Deep and JMeter scan matrices with common mail and database ports.
 - Reworked the TCP port scan to use an essential default set (web, mail, DNS, and administration ports) with an optional `-Ports` custom list and a wizard prompt for a custom list.
