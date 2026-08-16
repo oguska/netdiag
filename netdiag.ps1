@@ -511,7 +511,18 @@ function Read-LocalizedHost([string]$Prompt) {
     return Read-Host (ConvertTo-LocalizedText $Prompt)
 }
 
-$CurrentCommit = 'e8cc2a1'
+# The reported commit is derived from the git repository HEAD when the script
+# runs inside a clone, so it stays accurate after every local or remote commit.
+# When git is unavailable or the script is not inside a repository, the
+# last-known value below is used and is patched by Test-ScriptUpdate on update.
+$CurrentCommit = 'c443a31'
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    try {
+        $repoDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+        $commitProbe = & git -C $repoDir rev-parse --short HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($commitProbe)) { $CurrentCommit = $commitProbe.Trim() }
+    } catch {}
+}
 $GitHubApiUrl = 'https://api.github.com/repos/oguska/netdiag/commits/main'
 $GitHubRawUrl = 'https://raw.githubusercontent.com/oguska/netdiag/refs/heads/main/netdiag.ps1'
 $GitHubProjectUrl = 'https://github.com/oguska/netdiag'

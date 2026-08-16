@@ -353,6 +353,8 @@ The disclosure includes informational links to official EU GDPR and Turkish KVKK
 
 ### Commit hash-based auto-update
 
+- When the script runs inside a git clone, it reads the current commit hash from the repository HEAD (`git rev-parse --short HEAD`), so the reported version is always accurate after every local or remote commit.
+- When git is unavailable or the script is not inside a repository, it uses the last-known commit hash stamped into the script.
 - Checks the latest commit on the GitHub `main` branch.
 - Compares the seven-character remote commit hash with the local script version.
 - Prompts with localized Yes/No options.
@@ -772,6 +774,7 @@ This information is not legal advice. Organizations should separately evaluate o
 - Reworked the TCP port scan to use an essential default set (web, mail, DNS, and administration ports) with an optional `-Ports` custom list and a wizard prompt for a custom list.
 - Added report rows and advisor entries for the scanned port list, internet-exposed database/RDP/SMB/Telnet/FTP warnings, SSH and HTTP/80 information, and SSL certificate expiry warnings.
 - Enabled GeoIP/ASN enrichment on every scan by default (previously opt-in with `-GeoIp`), with `-SkipGeoIp` to disable and a wizard confirmation prompt.
+- Made the reported commit hash auto-derived from the git repository HEAD when running inside a clone, so it stays accurate after every local or remote commit without manual edits.
 - Renamed the extended matrix to clarify TCP and UDP service validation.
 - Reworked correlation priority so 100% HTTP failure cannot be reported as normal.
 - Reworked network-variation logic so elevated jitter with healthy application results is reported separately.
