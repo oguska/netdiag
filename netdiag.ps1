@@ -300,38 +300,44 @@ $Script:EnglishTranslations = [ordered]@{
     'Toplam HTTP Yanıt Süresi'='Total HTTP Response Time'
 }
 
+# ConvertTo-LocalizedText runs once per console status line and once per HTML row.
+# The sorted, regex-escaped entry list is therefore compiled once and cached.
+$Script:CompiledTranslations = $null
+function Get-CompiledTranslations {
+    if ($null -eq $Script:CompiledTranslations) {
+        $list = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($entry in (
+            $Script:EnglishTranslations.GetEnumerator() |
+                Sort-Object { ([string]$_.Key).Length } -Descending
+        )) {
+            # Do not translate a key when it occurs inside another word.
+            # Example: 'Ort' must not alter 'Port' or 'Report'.
+            $pattern = '(?<![\p{L}\p{N}_])' +
+                [System.Text.RegularExpressions.Regex]::Escape([string]$entry.Key) +
+                '(?![\p{L}\p{N}_])'
+            $list.Add([pscustomobject]@{
+                Regex = [System.Text.RegularExpressions.Regex]::new(
+                    $pattern,
+                    [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+                    [System.Text.RegularExpressions.RegexOptions]::Compiled
+                )
+                # Doubling '$' keeps the replacement literal in the Regex overload.
+                Replacement = ([string]$entry.Value).Replace('$','$$')
+            })
+        }
+        $Script:CompiledTranslations = $list.ToArray()
+    }
+    return $Script:CompiledTranslations
+}
+
 function ConvertTo-LocalizedText([object]$Text) {
     if ($null -eq $Text) { return '' }
 
     $result = [string]$Text
     if ($Script:LanguageCode -eq 'tr') { return $result }
 
-    # PowerShell hash keys and UI text comparisons are case-insensitive.
-    # Sort longer phrases first so a short translation cannot corrupt a longer one.
-    $entries = @(
-        $Script:EnglishTranslations.GetEnumerator() |
-            Sort-Object { ([string]$_.Key).Length } -Descending
-    )
-
-    foreach ($entry in $entries) {
-        $escapedKey = [System.Text.RegularExpressions.Regex]::Escape(
-            [string]$entry.Key
-        )
-
-        # Do not translate a key when it occurs inside another word.
-        # Example: 'Ort' must not alter 'Port' or 'Report'.
-        $pattern = '(?<![\p{L}\p{N}_])' + $escapedKey + '(?![\p{L}\p{N}_])'
-        $replacement = [string]$entry.Value
-
-        $result = [System.Text.RegularExpressions.Regex]::Replace(
-            $result,
-            $pattern,
-            [System.Text.RegularExpressions.MatchEvaluator]{
-                param($match)
-                return $replacement
-            },
-            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-        )
+    foreach ($entry in Get-CompiledTranslations) {
+        $result = $entry.Regex.Replace($result, $entry.Replacement)
     }
 
     return $result
@@ -368,66 +374,88 @@ function Test-LocalizedNoResponse([string]$Answer) {
     return ($value -match '^(?i:n|no)$')
 }
 
+# Phrase and word lists are also compiled once; ConvertTo-LocalizedReportValue
+# runs for every generated report value.
+$Script:CompiledReportTranslations = $null
+function Get-CompiledReportTranslations {
+    if ($null -eq $Script:CompiledReportTranslations) {
+        $list = New-Object 'System.Collections.Generic.List[object]'
+
+        # Full generated phrases first. Longer phrases prevent partial translations.
+        # PowerShell hashtables are case-insensitive, therefore process a tuple list
+        # instead of storing case-only variants as duplicate keys.
+        $phraseList = @(
+            @('Uygulama yük testi yapılmadı.','Application load testing was not performed.'),
+            @('Hata yok','No errors'),
+            @('Paket kaybı ile uygulama sorunları aynı ölçümde görüldü.','Packet loss and application issues were observed in the same measurement.'),
+            @('Ağ değişkenliği uygulama yanıt dağılımını etkiliyor olabilir.','Network variation may be affecting the application response-time distribution.'),
+            @('Uygulama, bağımlı servisler, veritabanı ve sunucu kaynakları incelenmelidir.','The application, dependent services, database, and server resources should be investigated.'),
+            @('Hedef ICMP kalite metriği alınamadı.','Destination ICMP quality metrics were unavailable.'),
+            @('IP MTU tahmini','IP MTU estimate'),
+            @('Gizli/Yanıtsız (*)','Hidden/Unresponsive (*)'),
+            @('Kullanılabilir CPU sayacı bulunamadı','No available CPU counter'),
+            @('gün kaldı','days remaining'),
+            @('olmasına rağmen','although'),
+            @('seviyesinde iken','while measured at'),
+            @('ve hata oranı','and error rate'),
+            @('ve kayıp','and loss'),
+            @('hedef RTT','destination RTT'),
+            @('Hedef jitter','Destination jitter')
+        )
+        foreach ($pair in $phraseList) {
+            $list.Add([pscustomobject]@{
+                Regex = [System.Text.RegularExpressions.Regex]::new(
+                    [System.Text.RegularExpressions.Regex]::Escape([string]$pair[0]),
+                    [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+                    [System.Text.RegularExpressions.RegexOptions]::Compiled
+                )
+                Replacement = ([string]$pair[1]).Replace('$','$$')
+            })
+        }
+
+        # Generated inventory values. Word boundaries prevent Port/Report corruption.
+        $wordList = @(
+            @('Anlık','Current'),
+            @('Toplam','Total'),
+            @('Kullanılan','Used'),
+            @('Boş','Free'),
+            @('Doluluk','Usage'),
+            @('Gün','Days'),
+            @('Başarılı','Successful'),
+            @('Hatalı','Failed'),
+            @('Hata','Error'),
+            @('Kayıp','Loss'),
+            @('Ortalama','Average'),
+            @('Ölçülemedi','Could not be measured'),
+            @('Bilinmiyor','Unknown')
+        )
+        foreach ($pair in $wordList) {
+            $pattern = '(?<![\p{L}\p{N}_])' +
+                [System.Text.RegularExpressions.Regex]::Escape([string]$pair[0]) +
+                '(?![\p{L}\p{N}_])'
+            $list.Add([pscustomobject]@{
+                Regex = [System.Text.RegularExpressions.Regex]::new(
+                    $pattern,
+                    [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+                    [System.Text.RegularExpressions.RegexOptions]::Compiled
+                )
+                Replacement = ([string]$pair[1]).Replace('$','$$')
+            })
+        }
+
+        $Script:CompiledReportTranslations = $list.ToArray()
+    }
+    return $Script:CompiledReportTranslations
+}
+
 function ConvertTo-LocalizedReportValue([object]$Value) {
     if ($null -eq $Value) { return 'N/A' }
 
     $text = [string]$Value
     if ($Script:LanguageCode -eq 'tr') { return $text }
 
-    # Full generated phrases first. Longer phrases prevent partial translations.
-    # PowerShell hashtables are case-insensitive, therefore process a tuple list
-    # instead of storing case-only variants as duplicate keys.
-    $phraseList = @(
-        @('Uygulama yük testi yapılmadı.','Application load testing was not performed.'),
-        @('Hata yok','No errors'),
-        @('Paket kaybı ile uygulama sorunları aynı ölçümde görüldü.','Packet loss and application issues were observed in the same measurement.'),
-        @('Ağ değişkenliği uygulama yanıt dağılımını etkiliyor olabilir.','Network variation may be affecting the application response-time distribution.'),
-        @('Uygulama, bağımlı servisler, veritabanı ve sunucu kaynakları incelenmelidir.','The application, dependent services, database, and server resources should be investigated.'),
-        @('Hedef ICMP kalite metriği alınamadı.','Destination ICMP quality metrics were unavailable.'),
-        @('IP MTU tahmini','IP MTU estimate'),
-        @('Gizli/Yanıtsız (*)','Hidden/Unresponsive (*)'),
-        @('Kullanılabilir CPU sayacı bulunamadı','No available CPU counter'),
-        @('gün kaldı','days remaining'),
-        @('olmasına rağmen','although'),
-        @('seviyesinde iken','while measured at'),
-        @('ve hata oranı','and error rate'),
-        @('ve kayıp','and loss'),
-        @('hedef RTT','destination RTT'),
-        @('Hedef jitter','Destination jitter')
-    )
-    foreach ($pair in $phraseList) {
-        $text = [regex]::Replace(
-            $text,
-            [regex]::Escape([string]$pair[0]),
-            [string]$pair[1],
-            [Text.RegularExpressions.RegexOptions]::IgnoreCase
-        )
-    }
-
-    # Generated inventory values. Word boundaries prevent Port/Report corruption.
-    $wordList = @(
-        @('Anlık','Current'),
-        @('Toplam','Total'),
-        @('Kullanılan','Used'),
-        @('Boş','Free'),
-        @('Doluluk','Usage'),
-        @('Gün','Days'),
-        @('Başarılı','Successful'),
-        @('Hatalı','Failed'),
-        @('Hata','Error'),
-        @('Kayıp','Loss'),
-        @('Ortalama','Average'),
-        @('Ölçülemedi','Could not be measured'),
-        @('Bilinmiyor','Unknown')
-    )
-    foreach ($pair in $wordList) {
-        $pattern = '(?<![\p{L}\p{N}_])' + [regex]::Escape([string]$pair[0]) + '(?![\p{L}\p{N}_])'
-        $text = [regex]::Replace(
-            $text,
-            $pattern,
-            [string]$pair[1],
-            [Text.RegularExpressions.RegexOptions]::IgnoreCase
-        )
+    foreach ($entry in Get-CompiledReportTranslations) {
+        $text = $entry.Regex.Replace($text, $entry.Replacement)
     }
 
     return ConvertTo-LocalizedText $text
@@ -457,12 +485,18 @@ function ConvertTo-HtmlSafe([object]$Value) {
     if ($null -eq $Value) { return '' }
     return [System.Net.WebUtility]::HtmlEncode([string]$Value)
 }
-function Get-StandardDeviation([double[]]$Values) {
+function Get-PopulationStandardDeviation([double[]]$Values) {
     if (-not $Values -or $Values.Count -lt 2) { return 0.0 }
-    $avg = ($Values | Measure-Object -Average).Average
+    $count = $Values.Count
     $sum = 0.0
-    foreach ($v in $Values) { $sum += [Math]::Pow(($v-$avg),2) }
-    return [Math]::Round([Math]::Sqrt($sum/($Values.Count-1)),2)
+    foreach ($value in $Values) { $sum += $value }
+    $average = $sum / $count
+    $sqSum = 0.0
+    foreach ($value in $Values) {
+        $diff = $value - $average
+        $sqSum += $diff * $diff
+    }
+    return [Math]::Round([Math]::Sqrt($sqSum / $count),2)
 }
 function Get-Percentile([double[]]$SortedArray,[double]$Percentile) {
     if (-not $SortedArray -or $SortedArray.Count -eq 0) { return $null }
@@ -474,13 +508,6 @@ function Get-PingLatency([object]$PingObject) {
     if ($null -ne $PingObject.PSObject.Properties['Latency']) { return [double]$PingObject.Latency }
     if ($null -ne $PingObject.PSObject.Properties['ResponseTime']) { return [double]$PingObject.ResponseTime }
     return $null
-}
-function Get-PopulationStandardDeviation([double[]]$Values) {
-    if (-not $Values -or $Values.Count -lt 2) { return 0.0 }
-    $average = ($Values | Measure-Object -Average).Average
-    $sum = 0.0
-    foreach ($value in $Values) { $sum += [Math]::Pow(($value - $average),2) }
-    return [Math]::Round([Math]::Sqrt($sum / $Values.Count),2)
 }
 function Get-MeanAbsoluteDelta([double[]]$Values) {
     if (-not $Values -or $Values.Count -lt 2) { return 0.0 }
@@ -506,11 +533,12 @@ function Invoke-PingProbe {
     $samples=New-Object 'System.Collections.Generic.List[object]'
     $latencies=New-Object 'System.Collections.Generic.List[double]'
     $pinger=New-Object System.Net.NetworkInformation.Ping
+    $buffer=New-Object byte[] $PayloadSize
+    $options=New-Object System.Net.NetworkInformation.PingOptions
+    $options.DontFragment=$DontFragment.IsPresent
+    $options.Ttl=128
     try {
         for($sequence=1;$sequence -le $Count;$sequence++){
-            $buffer=New-Object byte[] $PayloadSize
-            $options=New-Object System.Net.NetworkInformation.PingOptions
-            $options.DontFragment=$DontFragment.IsPresent;$options.Ttl=128
             try {
                 $reply=$pinger.Send($ComputerName,$TimeoutMs,$buffer,$options)
                 $success=$reply.Status-eq[System.Net.NetworkInformation.IPStatus]::Success
@@ -832,8 +860,6 @@ function Test-TcpService {
             }
             465 {
                 $protocol = 'SMTPS / Implicit TLS'
-                $mailTlsPort = 465
-                $mailTlsName = 'SMTP'
                 $mailTlsStream = New-Object Net.Security.SslStream($stream,$false,({$true}))
                 try {
                     $mailTlsStream.ReadTimeout = $TimeoutMs
@@ -1694,7 +1720,7 @@ public class NetDiagRunnerV2{
  static int activeRequests=0,peakConcurrency=0;
  static void UpdatePeak(int current){int observed;do{observed=peakConcurrency;if(current<=observed)return;}while(Interlocked.CompareExchange(ref peakConcurrency,current,observed)!=observed);}
  static async Task<Result> ExecuteRequest(HttpClient client,string url,string method,string assertion,int timeoutSeconds,int maxResponseBytes,int sequence){var r=new Result{Sequence=sequence,StartedUtc=DateTime.UtcNow,Success=false,ErrorType="",Error=""};int active=Interlocked.Increment(ref activeRequests);UpdatePeak(active);var total=Stopwatch.StartNew();try{using(var cts=new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds)))using(var req=new HttpRequestMessage(method=="HEAD"?HttpMethod.Head:HttpMethod.Get,url)){var header=Stopwatch.StartNew();using(var response=await client.SendAsync(req,HttpCompletionOption.ResponseHeadersRead,cts.Token).ConfigureAwait(false)){header.Stop();r.HeaderMs=header.Elapsed.TotalMilliseconds;r.StatusCode=(int)response.StatusCode;long bytes=0;string text="";if(method!="HEAD"){using(var stream=await response.Content.ReadAsStreamAsync().ConfigureAwait(false))using(var memory=new MemoryStream()){var buffer=new byte[8192];while(true){int read=await stream.ReadAsync(buffer,0,buffer.Length,cts.Token).ConfigureAwait(false);if(read<=0)break;bytes+=read;if(bytes>maxResponseBytes)throw new InvalidOperationException("ResponseSizeLimitExceeded");memory.Write(buffer,0,read);}if(!String.IsNullOrEmpty(assertion)){memory.Position=0;using(var reader=new StreamReader(memory)){text=reader.ReadToEnd();}}}}total.Stop();r.ElapsedMs=total.Elapsed.TotalMilliseconds;r.DownloadMs=Math.Max(0,r.ElapsedMs-r.HeaderMs);r.Bytes=bytes;bool httpOk=r.StatusCode>=200&&r.StatusCode<400;bool assertOk=true;if(!String.IsNullOrEmpty(assertion)){assertOk=text.IndexOf(assertion,StringComparison.Ordinal)>=0;if(!assertOk){r.AssertionFailed=true;r.ErrorType="AssertionFailed";r.Error="Assertion text was not found.";}}r.Success=httpOk&&assertOk;if(!httpOk){r.ErrorType="HttpStatus";r.Error="HTTP "+r.StatusCode;}}}}catch(TaskCanceledException ex){total.Stop();r.ElapsedMs=total.Elapsed.TotalMilliseconds;r.ErrorType="Timeout";r.Error=ex.Message;}catch(HttpRequestException ex){total.Stop();r.ElapsedMs=total.Elapsed.TotalMilliseconds;r.ErrorType="HttpRequestException";r.Error=ex.InnerException!=null?ex.InnerException.Message:ex.Message;}catch(Exception ex){total.Stop();r.ElapsedMs=total.Elapsed.TotalMilliseconds;r.ErrorType=ex.GetType().Name;r.Error=ex.InnerException!=null?ex.InnerException.Message:ex.Message;}finally{Interlocked.Decrement(ref activeRequests);}return r;}
- public static TestOutput Run(string url,int totalRequests,int threads,string assertion,int timeoutSeconds,int warmupRequests,int rampUpSeconds,int thinkTimeMs,int maxResponseBytes,string method){activeRequests=0;peakConcurrency=0;var results=new ConcurrentBag<Result>();var handler=new HttpClientHandler();handler.ServerCertificateCustomValidationCallback=(a,b,c,d)=>true;handler.AutomaticDecompression=DecompressionMethods.GZip|DecompressionMethods.Deflate;handler.MaxConnectionsPerServer=Math.Max(threads,2);using(var client=new HttpClient(handler)){client.Timeout=Timeout.InfiniteTimeSpan;client.DefaultRequestHeaders.Add("User-Agent","NetDiag/2.0");for(int w=0;w<warmupRequests;w++)ExecuteRequest(client,url,method,assertion,timeoutSeconds,maxResponseBytes,-(w+1)).GetAwaiter().GetResult();var options=new ParallelOptions{MaxDegreeOfParallelism=threads};Parallel.For(0,totalRequests,options,index=>{if(rampUpSeconds>0&&totalRequests>1){double ratio=index/(double)(totalRequests-1);int delay=(int)(ratio*rampUpSeconds*1000);if(delay>0)Thread.Sleep(delay);}var r=ExecuteRequest(client,url,method,assertion,timeoutSeconds,maxResponseBytes,index+1).GetAwaiter().GetResult();results.Add(r);if(thinkTimeMs>0)Thread.Sleep(thinkTimeMs);});}return new TestOutput{Results=results,PeakConcurrency=peakConcurrency};}
+ public static TestOutput Run(string url,int totalRequests,int threads,string assertion,int timeoutSeconds,int warmupRequests,int rampUpSeconds,int thinkTimeMs,int maxResponseBytes,string method){activeRequests=0;peakConcurrency=0;var results=new ConcurrentBag<Result>();var handler=new HttpClientHandler();handler.ServerCertificateCustomValidationCallback=(a,b,c,d)=>true;handler.AutomaticDecompression=DecompressionMethods.GZip|DecompressionMethods.Deflate;handler.MaxConnectionsPerServer=Math.Max(threads,2);using(var client=new HttpClient(handler)){client.Timeout=Timeout.InfiniteTimeSpan;client.DefaultRequestHeaders.Add("User-Agent","NetDiag/2.0");var warmOptions=new ParallelOptions{MaxDegreeOfParallelism=Math.Max(threads,2)};if(warmupRequests==1){ExecuteRequest(client,url,method,assertion,timeoutSeconds,maxResponseBytes,-1).GetAwaiter().GetResult();}else if(warmupRequests>1){Parallel.For(0,warmupRequests,warmOptions,w=>{ExecuteRequest(client,url,method,assertion,timeoutSeconds,maxResponseBytes,-(w+1)).GetAwaiter().GetResult();});}var options=new ParallelOptions{MaxDegreeOfParallelism=threads};Parallel.For(0,totalRequests,options,index=>{if(rampUpSeconds>0&&totalRequests>1){double ratio=index/(double)(totalRequests-1);int delay=(int)(ratio*rampUpSeconds*1000);if(delay>0)Thread.Sleep(delay);}var r=ExecuteRequest(client,url,method,assertion,timeoutSeconds,maxResponseBytes,index+1).GetAwaiter().GetResult();results.Add(r);if(thinkTimeMs>0)Thread.Sleep(thinkTimeMs);});}return new TestOutput{Results=results,PeakConcurrency=peakConcurrency};}
 }
 '@
     if(-not('NetDiagRunnerV2'-as[type])){Add-Type -TypeDefinition $code -Language CSharp}
@@ -1877,7 +1903,7 @@ if($ExportHtmlPath){
         Unloaded_Min_RTT='Hedef Minimum RTT'; Unloaded_Median_RTT='Hedef Medyan RTT'; Unloaded_p95_RTT='Hedef p95 RTT'; Unloaded_Max_RTT='Hedef Maksimum RTT'; Destination_RTT_StdDev='Hedef RTT Standart Sapması'; Destination_Mean_Jitter='Hedef Ortalama Jitter'; Destination_Peak_Jitter='Hedef Peak Jitter'; Destination_Smoothed_Variation='Hedef Yumuşatılmış RTT Değişimi';
         HTTPS_Certificate_Status='HTTPS Sertifika Durumu'; HTTPS_Certificate_NotBefore='HTTPS Sertifika Başlangıcı'; HTTPS_Certificate_NotAfter='HTTPS Sertifika Bitişi'; Effective_Load_Test_URL='Etkin Yük Testi URL''si'; Load_Test_Status='HTTP Yük Testi Durumu'; JMeter_Engine='HTTP Yük Test Motoru'; JMeter_Method='HTTP Metodu'; JMeter_Peak_Concurrency='Ölçülen En Yüksek Eşzamanlı İstek'; JMeter_RampUp='Ramp-up Süresi'; JMeter_Warmup_Requests='Warm-up İstek Sayısı'; JMeter_Successful_Requests='Başarılı HTTP İsteği'; JMeter_Failed_Requests='Başarısız HTTP İsteği'; JMeter_Test_Duration='Toplam Yük Testi Süresi'; JMeter_Avg_Header_Time='Ortalama Header / TTFB Süresi'; JMeter_p95_Header_Time='p95 Header / TTFB Süresi'; JMeter_Avg_Download_Time='Ortalama Response İndirme Süresi'; JMeter_Avg_Elapsed='Ortalama Toplam HTTP Süresi'; JMeter_Elapsed_StdDev='HTTP Süre Standart Sapması'; JMeter_p50_Elapsed='p50 Toplam HTTP Süresi'; JMeter_p75_Elapsed='p75 Toplam HTTP Süresi'; JMeter_p90_Elapsed='p90 Toplam HTTP Süresi'; JMeter_p95_Elapsed='p95 Toplam HTTP Süresi'; JMeter_p99_Elapsed='p99 Toplam HTTP Süresi'; JMeter_Status_Distribution='HTTP Durum Kodu Dağılımı'; JMeter_Error_Distribution='HTTP Hata Tipi Dağılımı'; JMeter_Total_Data='Toplam Alınan Response Verisi'; JMeter_Average_Response_Size='Ortalama Response Boyutu'; JMeter_Download_Throughput='Response Veri Aktarım Hızı'
     }
-    $rows = ''
+    $rows = New-Object Text.StringBuilder
     foreach ($x in $ReportData.GetEnumerator()) {
         $rawTitle = if ($displayNames.ContainsKey([string]$x.Key)) {
             [string]$displayNames[[string]$x.Key]
@@ -1903,11 +1929,11 @@ if($ExportHtmlPath){
             $value = ConvertTo-HtmlSafe $localizedValue
         }
 
-        $rows += "<tr><td><b>$(ConvertTo-HtmlSafe $title)</b></td><td>$value</td></tr>`n"
+        [void]$rows.Append("<tr><td><b>$(ConvertTo-HtmlSafe $title)</b></td><td>$value</td></tr>`n")
     }
-    $route = ''
+    $route = New-Object Text.StringBuilder
     foreach ($r in $RouteReportRows) {
-        $route += @"
+        [void]$route.Append(@"
 <tr class='$($r.CssClass)'>
     <td>$($r.Hop)</td>
     <td>$(ConvertTo-HtmlSafe $r.IP)</td>
@@ -1922,18 +1948,24 @@ if($ExportHtmlPath){
     <td>$($r.Loss)</td>
     <td>$(ConvertTo-HtmlSafe (ConvertTo-LocalizedText $r.Status))</td>
 </tr>
-"@
+"@)
     }
     $routeSection = ''
-    if ($route) {
+    if ($route.Length -gt 0) {
         $routeTitle = ConvertTo-LocalizedText 'Hop Katmanlı Rota, Gecikme ve Jitter Analizi'
         $avgHeader = ConvertTo-LocalizedText 'Ort'
         $medianHeader = ConvertTo-LocalizedText 'Medyan'
         $lossHeader = ConvertTo-LocalizedText 'Kayıp'
         $statusHeader = ConvertTo-LocalizedText 'Durum'
-        $routeSection = "<h3>$routeTitle</h3><table><thead><tr><th>Hop</th><th>IP</th><th>Min</th><th>Max</th><th>$avgHeader</th><th>$medianHeader</th><th>p95</th><th>Jitter</th><th>Peak</th><th>StdDev</th><th>$lossHeader</th><th>$statusHeader</th></tr></thead><tbody>$route</tbody></table>"
+        $routeSection = "<h3>$routeTitle</h3><table><thead><tr><th>Hop</th><th>IP</th><th>Min</th><th>Max</th><th>$avgHeader</th><th>$medianHeader</th><th>p95</th><th>Jitter</th><th>Peak</th><th>StdDev</th><th>$lossHeader</th><th>$statusHeader</th></tr></thead><tbody>$($route.ToString())</tbody></table>"
     }
-    $notes='';foreach ($n in $AdvisorNotes){$notes+="<div class='advisor-item'>$(ConvertTo-HtmlSafe (ConvertTo-LocalizedReportValue $n))</div>"};if(-not $notes){$notes="<div class='advisor-item'>$(ConvertTo-LocalizedText 'Ek uyarı yok.')</div>"}
+    $notes = New-Object Text.StringBuilder
+    foreach ($n in $AdvisorNotes) {
+        [void]$notes.Append("<div class='advisor-item'>$(ConvertTo-HtmlSafe (ConvertTo-LocalizedReportValue $n))</div>")
+    }
+    if ($notes.Length -eq 0) {
+        [void]$notes.Append("<div class='advisor-item'>$(ConvertTo-LocalizedText 'Ek uyarı yok.')</div>")
+    }
     $localizedAnalysis = ConvertTo-LocalizedReportValue ($analysis.ToString())
     $htmlLanguage = if ($Script:LanguageCode -eq 'tr') { 'tr' } else { 'en' }
     $htmlTitle = if ($Script:LanguageCode -eq 'tr') { 'NetDiag Raporu' } else { 'NetDiag Report' }
@@ -1944,7 +1976,8 @@ if($ExportHtmlPath){
     $hopJitterTitle = ConvertTo-LocalizedText 'Hop Bazlı Jitter Dağılımı'
     $notEnoughDataText = ConvertTo-LocalizedText 'Grafik oluşturmak için yeterli veri yok.'
 
-    $infographicHtml = "<section class='infographic-section'><h3>$infographicTitle</h3>"
+    $infographicHtml = New-Object Text.StringBuilder
+    [void]$infographicHtml.Append("<section class='infographic-section'><h3>$infographicTitle</h3>")
 
     # Network KPI cards
     if ($networkQualityAvailable) {
@@ -1954,11 +1987,11 @@ if($ExportHtmlPath){
             @{ Label=(ConvertTo-LocalizedText 'Ortalama Jitter'); Value="$($destinationPingMetrics.MeanJitter) ms"; Color='#f7630c' },
             @{ Label=(ConvertTo-LocalizedText 'Yanıt Kaybı'); Value="$($destinationPingMetrics.LossPercent)%"; Color='#d13438' }
         )
-        $infographicHtml += "<div class='chart-panel'><div class='chart-title'>$networkSummaryTitle</div><div class='dashboard-grid'>"
+        [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$networkSummaryTitle</div><div class='dashboard-grid'>")
         foreach ($card in $networkCards) {
-            $infographicHtml += "<div class='kpi-card'><div class='kpi-label'>$(ConvertTo-HtmlSafe $card.Label)</div><div class='kpi-value'>$(ConvertTo-HtmlSafe $card.Value)</div><div class='kpi-accent' style='background:$($card.Color)'></div></div>"
+            [void]$infographicHtml.Append("<div class='kpi-card'><div class='kpi-label'>$(ConvertTo-HtmlSafe $card.Label)</div><div class='kpi-value'>$(ConvertTo-HtmlSafe $card.Value)</div><div class='kpi-accent' style='background:$($card.Color)'></div></div>")
         }
-        $infographicHtml += '</div></div>'
+        [void]$infographicHtml.Append('</div></div>')
     }
 
     # HTTP KPI cards and success/failure donut
@@ -1973,18 +2006,18 @@ if($ExportHtmlPath){
             @{ Label=(ConvertTo-LocalizedText 'Hata Oranı'); Value=$errorRateDisplay; Color='#d13438' },
             @{ Label=(ConvertTo-LocalizedText 'Peak Eşzamanlılık'); Value=$peakDisplay; Color='#00b7c3' }
         )
-        $infographicHtml += "<div class='chart-panel'><div class='chart-title'>$httpSummaryTitle</div><div class='dashboard-grid'>"
+        [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$httpSummaryTitle</div><div class='dashboard-grid'>")
         foreach ($card in $httpCards) {
-            $infographicHtml += "<div class='kpi-card'><div class='kpi-label'>$(ConvertTo-HtmlSafe $card.Label)</div><div class='kpi-value'>$(ConvertTo-HtmlSafe $card.Value)</div><div class='kpi-accent' style='background:$($card.Color)'></div></div>"
+            [void]$infographicHtml.Append("<div class='kpi-card'><div class='kpi-label'>$(ConvertTo-HtmlSafe $card.Label)</div><div class='kpi-value'>$(ConvertTo-HtmlSafe $card.Value)</div><div class='kpi-accent' style='background:$($card.Color)'></div></div>")
         }
-        $infographicHtml += '</div>'
+        [void]$infographicHtml.Append('</div>')
 
         $totalRequestCount = [double]$ReportData.JMeter_Total_Requests
         $successfulRequestCount = [double]$ReportData.JMeter_Successful_Requests
         $failedRequestCount = [double]$ReportData.JMeter_Failed_Requests
         $successPercent = if ($totalRequestCount -gt 0) { [Math]::Round(($successfulRequestCount / $totalRequestCount) * 100,1) } else { 0 }
         $failedPercent = [Math]::Round(100 - $successPercent,1)
-        $infographicHtml += "<div class='donut-wrap'><div class='donut' style='background:conic-gradient(#107c10 0% $successPercent%,#d13438 $successPercent% 100%)'><div class='donut-center'>$successPercent%<br><span style='font-size:11px;font-weight:500'>$(ConvertTo-LocalizedText 'Başarılı İstekler')</span></div></div><div><div class='legend-item'><span class='legend-dot legend-success'></span>$(ConvertTo-LocalizedText 'Başarılı İstekler'): $successfulRequestCount ($successPercent%)</div><div class='legend-item'><span class='legend-dot legend-failed'></span>$(ConvertTo-LocalizedText 'Başarısız İstekler'): $failedRequestCount ($failedPercent%)</div></div></div></div>"
+        [void]$infographicHtml.Append("<div class='donut-wrap'><div class='donut' style='background:conic-gradient(#107c10 0% $successPercent%,#d13438 $successPercent% 100%)'><div class='donut-center'>$successPercent%<br><span style='font-size:11px;font-weight:500'>$(ConvertTo-LocalizedText 'Başarılı İstekler')</span></div></div><div><div class='legend-item'><span class='legend-dot legend-success'></span>$(ConvertTo-LocalizedText 'Başarılı İstekler'): $successfulRequestCount ($successPercent%)</div><div class='legend-item'><span class='legend-dot legend-failed'></span>$(ConvertTo-LocalizedText 'Başarısız İstekler'): $failedRequestCount ($failedPercent%)</div></div></div></div>")
 
         # HTTP percentile horizontal bars
         $percentileItems = @(
@@ -1996,12 +2029,12 @@ if($ExportHtmlPath){
         ) | Where-Object { $null -ne $_.Value }
         if ($percentileItems.Count -gt 0) {
             $maxPercentileValue = ($percentileItems | ForEach-Object { [double]$_.Value } | Measure-Object -Maximum).Maximum
-            $infographicHtml += "<div class='chart-panel'><div class='chart-title'>$httpPercentileTitle</div>"
+            [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$httpPercentileTitle</div>")
             foreach ($item in $percentileItems) {
                 $barWidth = if ($maxPercentileValue -gt 0) { [Math]::Round(([double]$item.Value / $maxPercentileValue) * 100,1) } else { 0 }
-                $infographicHtml += "<div class='bar-row'><div class='bar-label'>$($item.Label)</div><div class='bar-track'><div class='bar-fill' style='width:$barWidth%'></div></div><div class='bar-value'>$($item.Value) ms</div></div>"
+                [void]$infographicHtml.Append("<div class='bar-row'><div class='bar-label'>$($item.Label)</div><div class='bar-track'><div class='bar-fill' style='width:$barWidth%'></div></div><div class='bar-value'>$($item.Value) ms</div></div>")
             }
-            $infographicHtml += '</div>'
+            [void]$infographicHtml.Append('</div>')
         }
     }
 
@@ -2025,19 +2058,19 @@ if($ExportHtmlPath){
     )
     if ($jitterItems.Count -gt 0) {
         $maxHopJitter = ($jitterItems | Measure-Object Value -Maximum).Maximum
-        $infographicHtml += "<div class='chart-panel'><div class='chart-title'>$hopJitterTitle</div>"
+        [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$hopJitterTitle</div>")
         foreach ($item in $jitterItems) {
             $barWidth = if ($maxHopJitter -gt 0) { [Math]::Round(($item.Value / $maxHopJitter) * 100,1) } else { 0 }
             $hopLabel = "Hop $($item.Hop) · $($item.IP)"
-            $infographicHtml += "<div class='bar-row'><div class='bar-label' title='$(ConvertTo-HtmlSafe $hopLabel)'>$(ConvertTo-HtmlSafe $hopLabel)</div><div class='bar-track'><div class='bar-fill bar-fill-jitter' style='width:$barWidth%'></div></div><div class='bar-value'>$($item.Value) ms</div></div>"
+            [void]$infographicHtml.Append("<div class='bar-row'><div class='bar-label' title='$(ConvertTo-HtmlSafe $hopLabel)'>$(ConvertTo-HtmlSafe $hopLabel)</div><div class='bar-track'><div class='bar-fill bar-fill-jitter' style='width:$barWidth%'></div></div><div class='bar-value'>$($item.Value) ms</div></div>")
         }
-        $infographicHtml += '</div>'
+        [void]$infographicHtml.Append('</div>')
     }
 
     if ((-not $networkQualityAvailable) -and (-not $appMetricsAvailable) -and $jitterItems.Count -eq 0) {
-        $infographicHtml += "<div class='chart-panel chart-note'>$notEnoughDataText</div>"
+        [void]$infographicHtml.Append("<div class='chart-panel chart-note'>$notEnoughDataText</div>")
     }
-    $infographicHtml += '</section>'
+    [void]$infographicHtml.Append('</section>')
 
     $footerGeneratedText = ConvertTo-LocalizedText 'Bu rapor NetDiag sürümü tarafından oluşturuldu.'
     $footerProjectText = ConvertTo-LocalizedText 'Açık kaynak kodu, güncellemeleri ve proje ayrıntılarını GitHub üzerinde görüntüleyin.'
