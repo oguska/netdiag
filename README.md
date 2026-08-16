@@ -354,6 +354,7 @@ The HTML footer contains a collapsed-by-default privacy disclosure. It explains 
 - Update checks may communicate with GitHub.
 - DNS comparisons may communicate with configured public DNS resolvers.
 - Diagnostic probes communicate with the selected target systems.
+- GeoIP/ASN enrichment (enabled by default, disabled with `-SkipGeoIp`) sends the target and route-hop IP addresses to the third-party ip-api.com service solely to obtain location and network-ownership information; the addresses are not stored for later use.
 - NetDiag does not use cookies, advertising identifiers, usage analytics, or persistent user profiles.
 
 The disclosure includes informational links to official EU GDPR and Turkish KVKK resources. It is informational and is not legal advice.
@@ -803,6 +804,7 @@ This information is not legal advice. Organizations should separately evaluate o
 - Report footer with NetDiag version and GitHub project link.
 - Collapsed privacy and data-processing disclosure.
 - Official GDPR and KVKK informational links in the HTML disclosure.
+- A GeoIP/ASN paragraph in the collapsed HTML privacy notice that discloses the use of the third-party ip-api.com service (shown only when GeoIP/ASN enrichment actually ran; it also includes the same statement in the advisor notes).
 - New `WebSec` scan level (level 5) that runs all Deep checks plus the concurrent HTTP load test and a passive HTTP/HTTPS attack-surface analysis (methods/TRACE, banners, directory listing, cookie flags, per-port security headers, HTTP-to-HTTPS redirect) and a per-port dynamic page analysis (HTTP flood rate-limit evidence, Slowloris resistance, CSRF, SQL-injection probing, reflected XSS, host-header reflection, CRLF injection, Man-in-the-middle), with per-finding remediation advice in the advisor notes and dedicated report rows.
 
 ### Changed

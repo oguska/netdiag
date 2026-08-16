@@ -165,6 +165,7 @@ $Script:EnglishTranslations = [ordered]@{
     'Tanılama verileri yerel cihazda, çalıştırma sırasında işlenir; HTML raporu yalnızca kullanıcı seçerse yerel dosya olarak oluşturulur.'='Diagnostic data is processed locally on the device during execution; an HTML report is created as a local file only when the user chooses to save it.'
     'Rapor; kullanıcı adı, bilgisayar adı, yerel IP adresi, hedef adres, sistem envanteri ve ağ ölçümleri içerebilir. Raporun saklanması, paylaşılması ve erişim güvenliği kullanıcı veya raporu çalıştıran kuruluşun sorumluluğundadır.'='The report may contain the signed-in user name, computer name, local IP address, target address, system inventory, and network measurements. The user or organization running the report is responsible for its storage, sharing, and access security.'
     'Güncelleme kontrolü GitHub ile, DNS karşılaştırmaları yapılandırılmış genel DNS çözücülerle ve tanılama testleri seçilen hedef sistemle ağ iletişimi kurabilir. Tanılama sonuçları bu hizmetlere analitik amaçla gönderilmez.'='Update checks may communicate with GitHub, DNS comparisons with configured public DNS resolvers, and diagnostic tests with the selected target system. Diagnostic results are not sent to these services for analytics.'
+    'GeoIP/ASN zenginleştirmesi, hedef ve yol üzerindeki IP adreslerinin konum ve ağ sahipliği bilgilerini almak için üçüncü taraf ip-api.com servisini kullanır; bu IP adresleri yalnızca bu amaçla gönderilir ve daha sonra kullanılmak üzere saklanmaz.'='GeoIP/ASN enrichment uses the third-party ip-api.com service to obtain location and network-ownership information for the target and route-hop IP addresses; these IP addresses are sent solely for this purpose and are not stored for later use.'
     'NetDiag çerez, reklam kimliği veya kullanım analitiği kullanmaz; kalıcı bir kullanıcı profili oluşturmaz.'='NetDiag does not use cookies, advertising identifiers, or usage analytics, and does not create a persistent user profile.'
     'Bu bilgilendirme hukuki danışmanlık değildir. NetDiag bir kuruluş adına çalıştırılıyorsa rapor içeriği ve kullanım biçimi için GDPR, KVKK ve kurum politikaları kapsamındaki yükümlülükler ayrıca değerlendirilmelidir.'='This notice is not legal advice. If NetDiag is run on behalf of an organization, obligations concerning the report content and its use under the GDPR, the Turkish KVKK, and organizational policies should be assessed separately.'
     'AB GDPR veri koruma ilkeleri'='EU GDPR data protection principles'
@@ -2780,7 +2781,9 @@ if($dnsOk-and($ScanLevel -in @('Medium','Deep','JMeter','WebSec'))){
 
 $jmeterP95Val=$null;$jmeterErrRateVal=$null;$appMetricsAvailable=$false
 $ReportData.GeoIP_Target_ASN='N/A';$ReportData.GeoIP_Target_Location='N/A';$ReportData.GeoIP_Target_ISP='N/A';$ReportData.GeoIP_Hop_ASN='N/A'
+$geoIpNotice=$false
 if(-not $SkipGeoIp -and $targetIP){
+    $geoIpNotice=$true
     $hopIps=@($RouteReportRows|Where-Object{$_.IP-match'^\d{1,3}(\.\d{1,3}){3}$'}|Select-Object -ExpandProperty IP|Select-Object -Unique)
     $lookupIps=@($hopIps)+@($targetIP)|Select-Object -Unique
     $geoResults=@(Get-GeoIpInfo -IPAddresses $lookupIps)
@@ -3626,6 +3629,8 @@ if($ExportHtmlPath){
     $privacyReport = ConvertTo-LocalizedText 'Tanılama verileri yerel cihazda, çalıştırma sırasında işlenir; HTML raporu yalnızca kullanıcı seçerse yerel dosya olarak oluşturulur.'
     $privacyContents = ConvertTo-LocalizedText 'Rapor; kullanıcı adı, bilgisayar adı, yerel IP adresi, hedef adres, sistem envanteri ve ağ ölçümleri içerebilir. Raporun saklanması, paylaşılması ve erişim güvenliği kullanıcı veya raporu çalıştıran kuruluşun sorumluluğundadır.'
     $privacyConnections = ConvertTo-LocalizedText 'Güncelleme kontrolü GitHub ile, DNS karşılaştırmaları yapılandırılmış genel DNS çözücülerle ve tanılama testleri seçilen hedef sistemle ağ iletişimi kurabilir. Tanılama sonuçları bu hizmetlere analitik amaçla gönderilmez.'
+    $privacyGeoIp = ConvertTo-LocalizedText 'GeoIP/ASN zenginleştirmesi, hedef ve yol üzerindeki IP adreslerinin konum ve ağ sahipliği bilgilerini almak için üçüncü taraf ip-api.com servisini kullanır; bu IP adresleri yalnızca bu amaçla gönderilir ve daha sonra kullanılmak üzere saklanmaz.'
+    $privacyGeoIpHtml = if ($geoIpNotice) { "<p>$privacyGeoIp</p>" } else { '' }
     $privacyAnalytics = ConvertTo-LocalizedText 'NetDiag çerez, reklam kimliği veya kullanım analitiği kullanmaz; kalıcı bir kullanıcı profili oluşturmaz.'
     $privacyDisclaimer = ConvertTo-LocalizedText 'Bu bilgilendirme hukuki danışmanlık değildir. NetDiag bir kuruluş adına çalıştırılıyorsa rapor içeriği ve kullanım biçimi için GDPR, KVKK ve kurum politikaları kapsamındaki yükümlülükler ayrıca değerlendirilmelidir.'
     $gdprLinkText = ConvertTo-LocalizedText 'AB GDPR veri koruma ilkeleri'
@@ -3643,6 +3648,7 @@ if($ExportHtmlPath){
         <p>$privacyReport</p>
         <p>$privacyContents</p>
         <p>$privacyConnections</p>
+        $privacyGeoIpHtml
         <p>$privacyAnalytics</p>
         <p>$privacyDisclaimer</p>
         <div class='privacy-links'>
