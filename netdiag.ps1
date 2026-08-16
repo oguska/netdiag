@@ -14,7 +14,7 @@ param(
     [ValidateRange(1,100)][int]$HopPingCount = 5,
     [switch]$EnableLoadTest,
     [ValidateRange(1,1000)][int]$JMeterThreads = 10,
-    [ValidateRange(1,1000000)][int]$JMeterTotalRequests = 50,
+    [ValidateRange(1,1000000)][int]$JMeterTotalRequests = 200,
     [string]$JMeterAssertText,
     [string]$JMeterCsvPath,
     [string]$ExportHtmlPath,
@@ -2581,7 +2581,7 @@ if ([string]::IsNullOrWhiteSpace($Target)) {
         Write-Host (ConvertTo-LocalizedText '    Aynı anda gönderilebilecek en yüksek HTTP isteği sayısı.') -ForegroundColor DarkGray
         $v=Read-LocalizedHost ' -> Eşzamanlı kullanıcı [10]';if($v){$JMeterThreads=[int]$v}
         Write-Host (ConvertTo-LocalizedText '    Ana yük testi boyunca gönderilecek toplam HTTP isteği.') -ForegroundColor DarkGray
-        $v=Read-LocalizedHost ' -> Toplam istek [50]';if($v){$JMeterTotalRequests=[int]$v}
+        $v=Read-LocalizedHost ' -> Toplam istek [200]';if($v){$JMeterTotalRequests=[int]$v}
         Write-Host (ConvertTo-LocalizedText '    Yanıt gövdesinde aranacak metin. Boş bırakılırsa içerik doğrulaması yapılmaz.') -ForegroundColor DarkGray
         $JMeterAssertText=Read-LocalizedHost ' -> Assertion metni [opsiyonel]'
         Write-Host (ConvertTo-LocalizedText '    Uçtan uca RTT ve jitter için hedefe gönderilecek ICMP paketi sayısı.') -ForegroundColor DarkGray
@@ -3860,7 +3860,7 @@ if($ExportHtmlPath){
             $tailHealth = if ($tailRatio -lt 2) { 'kuyruk-saglikli' } elseif ($tailRatio -lt 3) { 'kuyruk-orta' } else { 'kuyruk-kritik' }
             $tailHealthText = if ($tailRatio -lt 2) { ConvertTo-LocalizedText 'Kuyruk Sağlıklı (<2x)' } elseif ($tailRatio -lt 3) { ConvertTo-LocalizedText 'Kuyruk Orta (2-3x)' } else { ConvertTo-LocalizedText 'Kuyruk Kritik (>3x)' }
             $tailHealthColor = if ($tailRatio -lt 2) { '#107c10' } elseif ($tailRatio -lt 3) { '#ffaa44' } else { '#d13438' }
-            $sampleBadge = if ($jmeterSamplesCount -ge 200) { "<span style='color:#107c10;font-weight:600'>; $jmeterSamplesCount</span>" } else { "<span style='color:#d13438;font-weight:600'>; $jmeterSamplesCount</span>" }
+            $sampleBadge = if ($jmeterSamplesCount -ge 200) { "<span style='color:#107c10;font-weight:600;margin-left:6px'>($jmeterSamplesCount)</span>" } else { "<span style='color:#d13438;font-weight:600;margin-left:6px'>($jmeterSamplesCount)</span>" }
             [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$(ConvertTo-HtmlSafe $spreadTitle) $sampleBadge</div><div class='bar-row'><div class='bar-label'>p50</div><div class='bar-track'><div class='bar-fill bar-fill-good' style='width:$p50Pct%'></div></div><div class='bar-value'>$jmeterP50Val ms</div></div><div class='bar-row'><div class='bar-label'>p95</div><div class='bar-track'><div class='bar-fill bar-fill-fair' style='width:$p95Pct%'></div></div><div class='bar-value'>$p95ValForSpread ms</div></div><div class='bar-row'><div class='bar-label'>p99</div><div class='bar-track'><div class='bar-fill bar-fill-poor' style='width:100%'></div></div><div class='bar-value'>$jmeterP99Val ms</div></div><div style='margin-top:8px;text-align:center'><span class='badge badge-$tailHealth' style='display:inline-block;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600;background:$tailHealthColor;color:#fff'>$(ConvertTo-HtmlSafe $tailHealthText) ($tailDisplay)</span></div></div>")
         }
 
