@@ -420,6 +420,21 @@ Application-load and network-correlation mode:
 - Network/application cross-correlation
 - Power BI-inspired report infographics
 
+### WebSec
+
+Web security scan mode (level 5). Includes all Deep checks (inventory, DNS, ICMP, MTU, extended TCP matrix, UDP validation, route/jitter, TLS/SSL inspection, HTTP analysis, GeoIP/ASN, advisor notes) and additionally performs a passive web attack-surface analysis:
+
+- Detects which open TCP ports actually serve HTTP or HTTPS.
+- HTTP method probes (OPTIONS `Allow`), including TRACE, PUT, DELETE, and PATCH detection (TRACE is a cross-site tracing/XST risk).
+- Server banner and `X-Powered-By` disclosure checks.
+- Directory-listing detection.
+- Cookie `Secure`, `HttpOnly`, and `SameSite` flag checks.
+- Missing/weak security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy) per web port.
+- HTTP/80 to HTTPS redirect validation.
+- Advisor notes with concrete remediation advice for each finding, plus a `Web Attack-Surface Summary` and `Web Attack-Surface Findings` section in the HTML report.
+
+The probes are read-only (GET/HEAD/OPTIONS/TRACE) and never modify server state. The concurrent load test remains exclusive to JMeter mode.
+
 ---
 
 ## Prerequisites and requirements
@@ -580,7 +595,7 @@ The wizard explains:
 ```text
 -Target                     Target DNS name or IP address
 -Port                       Target TCP port, default 443
--ScanLevel                  Low, Medium, Deep, or JMeter
+-ScanLevel                  Low, Medium, Deep, JMeter, or WebSec
 -HopPingCount               ICMP samples per responsive route hop
 -EnableLoadTest             Enables the built-in HTTP load test outside JMeter mode
 -JMeterThreads              Maximum concurrent HTTP requests
@@ -768,6 +783,7 @@ This information is not legal advice. Organizations should separately evaluate o
 - Report footer with NetDiag version and GitHub project link.
 - Collapsed privacy and data-processing disclosure.
 - Official GDPR and KVKK informational links in the HTML disclosure.
+- New `WebSec` scan level (level 5) that runs all Deep checks plus a passive HTTP/HTTPS attack-surface analysis (methods/TRACE, banners, directory listing, cookie flags, per-port security headers, HTTP-to-HTTPS redirect) with per-finding remediation advice in the advisor notes and dedicated report rows.
 
 ### Changed
 

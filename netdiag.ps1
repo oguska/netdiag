@@ -10,7 +10,7 @@
 param(
     [Parameter(Position=0)][string]$Target,
     [Parameter(Position=1)][ValidateRange(1,65535)][int]$Port = 443,
-    [ValidateSet('Low','Medium','Deep','JMeter')][string]$ScanLevel = 'Deep',
+    [ValidateSet('Low','Medium','Deep','JMeter','WebSec')][string]$ScanLevel = 'Deep',
     [ValidateRange(1,100)][int]$HopPingCount = 5,
     [switch]$EnableLoadTest,
     [ValidateRange(1,1000)][int]$JMeterThreads = 10,
@@ -57,6 +57,7 @@ $Script:EnglishTranslations = [ordered]@{
     'HOP KATMANLI ROTA VE JITTER ANALİZİ'='HOP-BY-HOP ROUTE AND JITTER ANALYSIS'
     'GELİŞMİŞ HTTP EŞZAMANLI YÜK TESTİ'='ADVANCED CONCURRENT HTTP LOAD TEST'
     'WEB, SSL VE HTTP ANALİZİ'='WEB, SSL AND HTTP ANALYSIS'
+    'WEB SALDIRI YÜZEYİ ANALİZİ VE ÇÖZÜM ÖNERİLERİ'='WEB ATTACK-SURFACE ANALYSIS AND SOLUTION ADVICE'
     'KÖK NEDEN VE ÇAPRAZ KORELASYON'='ROOT CAUSE AND CROSS-CORRELATION'
     'HTML RAPOR OLUŞTURULUYOR'='GENERATING HTML REPORT'
     'DIAGNOSTIC TAMAMLANDI'='DIAGNOSTIC COMPLETED'
@@ -87,6 +88,9 @@ $Script:EnglishTranslations = [ordered]@{
     'Harici JTL/CSV yolu'='External JTL/CSV path'
     'Özel portlar'='Custom ports'
     'GeoIP/ASN zenginleştirme?'='GeoIP/ASN enrichment?'
+    'Web güvenliği: tüm Deep analizine ek olarak HTTP/HTTPS servisleri için yaygın web saldırı yüzeyi ve çözüm önerileri.'='Web security: all Deep analysis plus common web attack-surface checks and solution advice for HTTP/HTTPS services.'
+    'Web Saldırı Yüzeyi Özeti'='Web Attack-Surface Summary'
+    'Web Saldırı Yüzeyi Bulguları'='Web Attack-Surface Findings'
     'HTML rapor kaydedilsin mi?'='Save HTML report?'
     'Yol'='Path'
     'opsiyonel'='optional'
@@ -1483,6 +1487,155 @@ function Test-SecurityHeaderAudit {
     }
 }
 
+function Test-WebSecuritySurface {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][ValidateRange(1,65535)][int]$Port,
+        [ValidateSet('http','https')][string]$Protocol,
+        [ValidateRange(1,120)][int]$TimeoutSec = 5
+    )
+    $items = New-Object 'System.Collections.Generic.List[object]'
+    $baseUrl = "${Protocol}://${ComputerName}:${Port}/"
+    $probeHeaders = @{ 'User-Agent' = 'NetDiag-WebSec/1.0'; 'Accept' = '*/*' }
+    $old = [Net.ServicePointManager]::ServerCertificateValidationCallback
+    try {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+
+        $optionsResponse = $null
+        try {
+            $optionsResponse = Invoke-WebRequest -Uri $baseUrl -Method Options -Headers $probeHeaders -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop
+        } catch { $optionsResponse = $null }
+
+        $allowValue = $null
+        if ($optionsResponse -and $optionsResponse.Headers) {
+            foreach ($k in $optionsResponse.Headers.Keys) { if ($k -ieq 'Allow') { $allowValue = $optionsResponse.Headers[$k]; break } }
+        }
+        if ($allowValue) {
+            $allowed = @($allowValue -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { $_.ToUpperInvariant() })
+            $items.Add([pscustomobject]@{ Check='HTTP Methods'; Status='Info'; Detail="Allow: $($allowed -join ', ')" })
+            if ($allowed -contains 'PUT') { $items.Add([pscustomobject]@{ Check='PUT'; Status='Danger'; Detail='PUT is allowed' }) }
+            if ($allowed -contains 'DELETE') { $items.Add([pscustomobject]@{ Check='DELETE'; Status='Danger'; Detail='DELETE is allowed' }) }
+            if ($allowed -contains 'PATCH') { $items.Add([pscustomobject]@{ Check='PATCH'; Status='Warn'; Detail='PATCH is allowed' }) }
+        } elseif ($optionsResponse) {
+            $items.Add([pscustomobject]@{ Check='HTTP Methods'; Status='Info'; Detail='OPTIONS returned no Allow header' })
+        }
+
+        $traceEnabled = $false
+        try {
+            $traceResponse = Invoke-WebRequest -Uri $baseUrl -Method Trace -Headers $probeHeaders -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop
+            $traceEnabled = $true
+        } catch { $traceEnabled = $false }
+        if ($traceEnabled) {
+            $items.Add([pscustomobject]@{ Check='TRACE Method'; Status='Danger'; Detail='TRACE is enabled (cross-site tracing risk)' })
+        } else {
+            $items.Add([pscustomobject]@{ Check='TRACE Method'; Status='Pass'; Detail='TRACE not enabled' })
+        }
+
+        $getResponse = $null
+        try {
+            $getResponse = Invoke-WebRequest -Uri $baseUrl -Method Get -Headers $probeHeaders -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop
+        } catch { $getResponse = $null }
+
+        if ($getResponse -and $getResponse.Headers) {
+            $serverValue = $null
+            $xPoweredValues = New-Object 'System.Collections.Generic.List[string]'
+            foreach ($k in $getResponse.Headers.Keys) {
+                if ($k -ieq 'Server') { $serverValue = [string]$getResponse.Headers[$k] }
+                elseif ($k -ieq 'X-Powered-By') { $xPoweredValues.Add([string]$getResponse.Headers[$k]) }
+            }
+            if ($serverValue) {
+                $items.Add([pscustomobject]@{ Check='Server Banner'; Status='Warn'; Detail="Server: $serverValue" })
+            } else {
+                $items.Add([pscustomobject]@{ Check='Server Banner'; Status='Pass'; Detail='No Server header disclosed' })
+            }
+            if ($xPoweredValues.Count -gt 0) {
+                $items.Add([pscustomobject]@{ Check='X-Powered-By'; Status='Warn'; Detail=("X-Powered-By: " + ($xPoweredValues -join ', ')) })
+            }
+
+            $bodyText = ''
+            try { $bodyText = [string]$getResponse.Content } catch { $bodyText = '' }
+            if ($bodyText -match '(?im)(<title>[^<]*index of[^<]*</title>|index of /\s*<|directory listing for|parent directory</a>|listing directory)') {
+                $items.Add([pscustomobject]@{ Check='Directory Listing'; Status='Danger'; Detail='Directory listing appears enabled on /' })
+            } else {
+                $items.Add([pscustomobject]@{ Check='Directory Listing'; Status='Pass'; Detail='No obvious directory listing on /' })
+            }
+
+            $cookieFindings = New-Object 'System.Collections.Generic.List[string]'
+            foreach ($k in $getResponse.Headers.Keys) {
+                if ($k -ieq 'Set-Cookie') {
+                    $cookieHeader = [string]$getResponse.Headers[$k]
+                    foreach ($cookieChunk in @($cookieHeader -split ',(?=[^;=\s]+=)')) {
+                        $cookieName = (($cookieChunk -split ';')[0]).Trim()
+                        if (-not $cookieName) { continue }
+                        if ($cookieChunk -notmatch '(?i)\bSecure\b') { $cookieFindings.Add("$cookieName lacks Secure") }
+                        if ($cookieChunk -notmatch '(?i)\bHttpOnly\b') { $cookieFindings.Add("$cookieName lacks HttpOnly") }
+                        if ($cookieChunk -notmatch '(?i)\bSameSite\b') { $cookieFindings.Add("$cookieName lacks SameSite") }
+                    }
+                }
+            }
+            if ($cookieFindings.Count -gt 0) {
+                $items.Add([pscustomobject]@{ Check='Cookie Flags'; Status='Warn'; Detail=($cookieFindings -join '; ') })
+            }
+
+            try {
+                $secAudit = Test-SecurityHeaderAudit -Response $getResponse -Protocol $Protocol
+                foreach ($secItem in $secAudit.Items) {
+                    if ($secItem.Status -ne 'Pass') {
+                        $items.Add([pscustomobject]@{ Check=$secItem.Name; Status=$secItem.Status; Detail=$secItem.Detail })
+                    }
+                }
+            } catch {}
+        }
+
+        if ($Protocol -eq 'http') {
+            $redirectState = 'no_http'
+            $redirectLocation = ''
+            try {
+                $tcp = New-Object Net.Sockets.TcpClient
+                $asyncResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
+                if ($asyncResult.AsyncWaitHandle.WaitOne(($TimeoutSec * 1000), $false)) {
+                    $tcp.EndConnect($asyncResult)
+                    $stream = $tcp.GetStream()
+                    $stream.ReadTimeout = $TimeoutSec * 1000
+                    $stream.WriteTimeout = $TimeoutSec * 1000
+                    $requestText = "GET / HTTP/1.1`r`nHost: $ComputerName`r`nConnection: close`r`n`r`n"
+                    $requestBytes = [Text.Encoding]::ASCII.GetBytes($requestText)
+                    $stream.Write($requestBytes, 0, $requestBytes.Length)
+                    $rawResponse = [Text.Encoding]::ASCII.GetString((Read-NetworkBytes -Stream $stream -MaximumBytes 1024))
+                    $statusLine = ($rawResponse -split "`r?`n")[0]
+                    if ($statusLine -match '^HTTP/\S+\s+(\d{3})') {
+                        $statusCode = [int]$matches[1]
+                        foreach ($headerLine in ($rawResponse -split "`r?`n")) {
+                            if ($headerLine -match '(?i)^Location:\s*(.+)$') { $redirectLocation = $matches[1].Trim(); break }
+                        }
+                        if ($statusCode -ge 300 -and $statusCode -lt 400) {
+                            $redirectState = if ($redirectLocation -match '^https://') { 'to_https' } else { 'not_to_https' }
+                        } else {
+                            $redirectState = 'no_redirect'
+                        }
+                    }
+                }
+                $tcp.Close()
+            } catch { $redirectState = 'error' }
+            if ($redirectState -eq 'to_https') {
+                $items.Add([pscustomobject]@{ Check='HTTP to HTTPS'; Status='Pass'; Detail='HTTP/80 redirects to HTTPS' })
+            } elseif ($redirectState -eq 'no_redirect') {
+                $items.Add([pscustomobject]@{ Check='HTTP to HTTPS'; Status='Danger'; Detail='HTTP/80 serves content without an HTTPS redirect' })
+            } elseif ($redirectState -eq 'not_to_https') {
+                $items.Add([pscustomobject]@{ Check='HTTP to HTTPS'; Status='Warn'; Detail="HTTP/80 redirects but not to HTTPS (Location: $redirectLocation)" })
+            }
+        }
+    }
+    catch {
+        $items.Add([pscustomobject]@{ Check='Probe'; Status='Error'; Detail=$_.Exception.Message })
+    }
+    finally {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $old
+    }
+    return $items.ToArray()
+}
+
 function Get-GeoIpInfo {
     [CmdletBinding()]
     param(
@@ -1822,8 +1975,9 @@ if ([string]::IsNullOrWhiteSpace($Target)) {
     Write-Host " [2] Medium  - $(ConvertTo-LocalizedText 'Standart ağ analizi: Low testlerine ek olarak temel port matrisi ve rota/jitter.')" -ForegroundColor White
     Write-Host " [3] Deep    - $(ConvertTo-LocalizedText 'Ayrıntılı teşhis: geniş port matrisi, rota/jitter, SSL ve HTTP analizi.')" -ForegroundColor White
     Write-Host " [4] JMeter  - $(ConvertTo-LocalizedText 'Yük testi: Deep ağ ölçümlerine ek olarak gelişmiş eşzamanlı HTTP testi.')" -ForegroundColor White
-    do {$v=Read-LocalizedHost ' -> Seviye [3]';if(-not $v){$v='3'}}while($v -notin @('1','2','3','4'))
-    $ScanLevel=@{'1'='Low';'2'='Medium';'3'='Deep';'4'='JMeter'}[$v]
+    Write-Host " [5] WebSec  - $(ConvertTo-LocalizedText 'Web güvenliği: tüm Deep analizine ek olarak HTTP/HTTPS servisleri için yaygın web saldırı yüzeyi ve çözüm önerileri.')" -ForegroundColor White
+    do {$v=Read-LocalizedHost ' -> Seviye [3]';if(-not $v){$v='3'}}while($v -notin @('1','2','3','4','5'))
+    $ScanLevel=@{'1'='Low';'2'='Medium';'3'='Deep';'4'='JMeter';'5'='WebSec'}[$v]
     if ($ScanLevel -ne 'Low') {
         Write-Host (ConvertTo-LocalizedText '    Her rota adımına gönderilecek ICMP paketi sayısı. Daha yüksek değer daha güvenilir fakat daha yavaştır.') -ForegroundColor DarkGray
         $v = Read-LocalizedHost ' -> Hop başına ping [5]'; if ($v) { $HopPingCount = [int]$v }
@@ -1841,7 +1995,7 @@ if ([string]::IsNullOrWhiteSpace($Target)) {
         $v=Read-LocalizedHost ' -> Warm-up istek sayısı [5]';if($v){$JMeterWarmupRequests=[int]$v}
         Write-Host (ConvertTo-LocalizedText '    Eşzamanlı yükün kademeli olarak artırılacağı süre.') -ForegroundColor DarkGray
         $v=Read-LocalizedHost ' -> Ramp-up süresi saniye [2]';if($v){$JMeterRampUpSeconds=[int]$v}
-    } else {
+    } elseif ($ScanLevel -in @('Low','Medium','Deep')) {
         $v=Read-LocalizedHost ' -> Harici JTL/CSV yolu [opsiyonel]';if($v-and(Test-Path $v)){$JMeterCsvPath=$v}
     }
     $yesNoLabel = Get-LocalizedYesNoLabel
@@ -2004,9 +2158,9 @@ try {
     elseif($cname-match'cloudfront|akamai|fastly|cloudflare'){$isCDN=$true;$cdnName="CDN Provider ($cname)"}
     $ReportData.CDN_Status=$cdnName
     if($isCDN){Write-Status CDN $cdnName Yellow;$AdvisorNotes.Add('[i] CDN/reverse proxy tespit edildi; görülen port ve gecikme değerleri origin sunucuyu temsil etmeyebilir.')}
-    if(($ScanLevel -in @('Medium','Deep','JMeter')) -and $Target -ne $targetIP){try{$pub=@(Resolve-DnsName $Target -Server 8.8.8.8 -ErrorAction Stop|Where-Object IPAddress|Select-Object -ExpandProperty IPAddress -Unique);if($pub){$ReportData.Public_DNS_IP=$pub-join', ';if($targetIP -notin $pub){$AdvisorNotes.Add("[!] DNS MISMATCH: Yerel $targetIP, public $($pub-join', '). Split-DNS ihtimalini inceleyin.")}}}catch{}}
+    if(($ScanLevel -in @('Medium','Deep','JMeter','WebSec')) -and $Target -ne $targetIP){try{$pub=@(Resolve-DnsName $Target -Server 8.8.8.8 -ErrorAction Stop|Where-Object IPAddress|Select-Object -ExpandProperty IPAddress -Unique);if($pub){$ReportData.Public_DNS_IP=$pub-join', ';if($targetIP -notin $pub){$AdvisorNotes.Add("[!] DNS MISMATCH: Yerel $targetIP, public $($pub-join', '). Split-DNS ihtimalini inceleyin.")}}}catch{}}
     try{$ptr=(Resolve-DnsName $targetIP -Type PTR -ErrorAction Stop).NameHost;if($ptr){$ReportData.Reverse_DNS=$ptr-join', '}}catch{}
-    if($Target -ne $targetIP -and $ScanLevel -in @('Medium','Deep','JMeter')){
+    if($Target -ne $targetIP -and $ScanLevel -in @('Medium','Deep','JMeter','WebSec')){
         $dnsSec=Get-DnsSecurityStatus -Name $Target -LocalA $ips -CloudflareUdpA $cloudflare -HttpTimeoutSec $HttpTimeoutSec
         $ReportData.DNSSEC_Status=$dnsSec.DNSSEC;$ReportData.DNS_DoT_Status=$dnsSec.DoT;$ReportData.DNS_DoH_Status=$dnsSec.DoH;$ReportData.DNS_Resolver_Consistency=$dnsSec.Consistency
         Write-Status DNSSEC $dnsSec.DNSSEC $(if($dnsSec.DNSSEC -like 'Signed*'){'Green'}elseif($dnsSec.DNSSEC -like 'Validation failed*'){'Red'}else{'Yellow'})
@@ -2199,7 +2353,7 @@ if($dnsOk){
     }
 
     $unverifiedCount = @($portResults | Where-Object { $_.State -eq 'Unverified' }).Count
-    if ($ScanLevel -in @('Deep','JMeter')) {
+    if ($ScanLevel -in @('Deep','JMeter','WebSec')) {
         if ($Script:LanguageCode -eq 'tr') {
             $AdvisorNotes.Add('[i] SQL Server Browser UDP/1434 üzerinden aktif olarak sorgulanır; yanıt alınırsa servis doğrulanır.')
         } else {
@@ -2208,7 +2362,7 @@ if($dnsOk){
     }
 
     $mailPortsScanned = @($tcpPortList | Where-Object { $_ -in @(25,110,143,465,587,993,995) })
-    if ($ScanLevel -in @('Deep','JMeter') -and $mailPortsScanned.Count -gt 0) {
+    if ($ScanLevel -in @('Deep','JMeter','WebSec') -and $mailPortsScanned.Count -gt 0) {
         if ($Script:LanguageCode -eq 'tr') {
             $AdvisorNotes.Add("[i] E-posta portları test edildi: $($mailPortsScanned -join ', '). STARTTLS portlarında ilk servis bannerı doğrulanır; kimlik doğrulama yapılmaz.")
         } else {
@@ -2249,7 +2403,7 @@ if($dnsOk){
 
 
 $udpResults = New-Object 'System.Collections.Generic.List[object]'
-if ($dnsOk -and $ScanLevel -in @('Deep','JMeter')) {
+if ($dnsOk -and $ScanLevel -in @('Deep','JMeter','WebSec')) {
     $udpBadges = New-Object 'System.Collections.Generic.List[string]'
     foreach ($udpPort in @(53,123,1434)) {
         $udpResult = Test-UdpService `
@@ -2322,7 +2476,7 @@ if ($dnsOk -and $ScanLevel -in @('Deep','JMeter')) {
 }
 
 $maxJitterVal=$null;$routeMetricsAvailable=$false;$destinationHopJitter=$null
-if($dnsOk-and($ScanLevel -in @('Medium','Deep','JMeter'))){
+if($dnsOk-and($ScanLevel -in @('Medium','Deep','JMeter','WebSec'))){
     Write-LogHeader '4. HOP KATMANLI ROTA VE JITTER ANALİZİ'
     try{$trace=Test-NetConnection $targetIP -TraceRoute -WarningAction SilentlyContinue;$hops=@($trace.TraceRoute)}catch{$hops=@()}
     $idx=1
@@ -2441,7 +2595,7 @@ public class NetDiagRunnerV2{
 if($JMeterCsvPath-and(Test-Path $JMeterCsvPath)){try{$csv=@(Import-Csv $JMeterCsvPath);$elapsedCsv=@($csv|ForEach-Object{if($_.elapsed -ne $null){[double]$_.elapsed}}|Sort-Object);if($elapsedCsv.Count){$ReportData.Ext_JMeter_File=Split-Path $JMeterCsvPath -Leaf;$ReportData.Ext_JMeter_p95="$(Get-Percentile $elapsedCsv 95) ms"}}catch{Write-Status CSV $_.Exception.Message Red}}
 
 
-if($dnsOk -and $ScanLevel -eq 'Deep' -and ($Port -in @(80,443,8080,8443))){
+if($dnsOk -and $ScanLevel -in @('Deep','WebSec') -and ($Port -in @(80,443,8080,8443))){
     Write-LogHeader '6. WEB, SSL VE HTTP ANALİZİ'
     $protocol=if($Port -in @(443,8443)){'https'}else{'http'};$url="${protocol}://${Target}:${Port}/"
     $ReportData.TLS_Supported_Versions='N/A';$ReportData.TLS_Negotiated_Protocol='N/A';$ReportData.TLS_Negotiated_Cipher='N/A';$ReportData.HTTP_Version_ALPN='N/A';$ReportData.HTTP3_QUIC_Status='N/A';$ReportData.Security_Header_Score='N/A';$ReportData.Security_Headers='N/A'
@@ -2510,6 +2664,126 @@ if($dnsOk -and $ScanLevel -eq 'Deep' -and ($Port -in @(80,443,8080,8443))){
             if($secAudit.HasFailures){if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] Bazı güvenlik başlıkları eksik; gizlilik, bütünlük ve tarayıcı güvenliği risklerini azaltmak için HTTP yanıt başlıkları güçlendirilmelidir.')}else{$AdvisorNotes.Add('[!] Some security headers are missing; HTTP response headers should be hardened to reduce privacy, integrity, and browser security risks.')}}
         }
     }catch{Write-Status HTTP $_.Exception.Message Red}finally{[Net.ServicePointManager]::ServerCertificateValidationCallback=$old}
+}
+
+if ($dnsOk -and $ScanLevel -eq 'WebSec') {
+    Write-LogHeader '6b. WEB SALDIRI YÜZEYİ ANALİZİ VE ÇÖZÜM ÖNERİLERİ'
+    $webSecRows = New-Object 'System.Collections.Generic.List[object]'
+    $webSecBadges = New-Object 'System.Collections.Generic.List[string]'
+    $webSecAdvised = @{}
+    $dangerCount = 0
+    $warnCount = 0
+    $webPortsProbed = @()
+    $protocolByPort = @{}
+    foreach ($pr in $portResults) { if (-not $protocolByPort.ContainsKey($pr.Port)) { $protocolByPort[$pr.Port] = $pr.Protocol } }
+    $knownNonWeb = @('SSH','SMTP Relay','SMTP Submission / STARTTLS','POP3 / STARTTLS','IMAP / STARTTLS','SMTPS / Implicit TLS','IMAPS / Implicit TLS','POP3S / Implicit TLS','RDP','SMB','Telnet','FTP')
+
+    foreach ($wp in @($openTcpPorts | Sort-Object)) {
+        $knownProto = $null
+        if ($protocolByPort.ContainsKey($wp)) { $knownProto = $protocolByPort[$wp] }
+        if ($knownProto -and $knownProto -in $knownNonWeb) { continue }
+
+        $wpProto = if ($wp -in @(443,8443)) { 'https' } else { 'http' }
+        $isWeb = $wp -in @(80,443,8080,8443)
+        if (-not $isWeb) {
+            foreach ($tryProto in @($wpProto, $(if ($wpProto -eq 'http') { 'https' } else { 'http' }))) {
+                try {
+                    $null = Invoke-WebRequest -Uri "${tryProto}://${Target}:${wp}/" -Method Head -Headers @{ 'User-Agent' = 'NetDiag-WebSec/1.0' } -TimeoutSec $HttpTimeoutSec -UseBasicParsing -ErrorAction Stop
+                    $wpProto = $tryProto
+                    $isWeb = $true
+                    break
+                } catch { }
+            }
+        }
+        if (-not $isWeb) { continue }
+        $webPortsProbed += $wp
+        Write-Status "WEBSEC-$wp" "$wpProto servisi doğrulandı; saldırı yüzeyi analiz ediliyor..." Cyan
+        $surfaceItems = @(Test-WebSecuritySurface -ComputerName $Target -Port $wp -Protocol $wpProto -TimeoutSec $HttpTimeoutSec)
+        foreach ($surfaceItem in $surfaceItems) {
+            $surfaceItem | Add-Member -NotePropertyName Port -NotePropertyValue $wp -Force
+            $webSecRows.Add($surfaceItem)
+            $itemColor = switch ($surfaceItem.Status) {
+                'Danger' { 'Red' }
+                'Fail'   { 'Red' }
+                'Warn'   { 'Yellow' }
+                'Pass'   { 'Green' }
+                default  { 'DarkGray' }
+            }
+            Write-Status "WEBSEC-$wp-$($surfaceItem.Check)" "$($surfaceItem.Status): $($surfaceItem.Detail)" $itemColor
+            if ($surfaceItem.Status -in @('Danger','Fail')) { $dangerCount++ }
+            elseif ($surfaceItem.Status -eq 'Warn') { $warnCount++ }
+        }
+    }
+
+    if ($webPortsProbed.Count -eq 0) {
+        if ($Script:LanguageCode -eq 'tr') {
+            $ReportData.Web_Security_Summary = 'Açık HTTP/HTTPS servisi bulunamadı; web saldırı yüzeyi analizi yapılmadı.'
+            $AdvisorNotes.Add('[i] WebSec seviyesinde açık HTTP/HTTPS servisi tespit edilmedi; saldırı yüzeyi analizi atlandı.')
+        } else {
+            $ReportData.Web_Security_Summary = 'No open HTTP/HTTPS service was found; web attack-surface analysis was not performed.'
+            $AdvisorNotes.Add('[i] No open HTTP/HTTPS service was detected at the WebSec level; the attack-surface analysis was skipped.')
+        }
+    } else {
+        foreach ($row in $webSecRows) {
+            $rowColorClass = switch ($row.Status) {
+                'Pass'   { 'badge-open' }
+                'Warn'   { 'badge-warning' }
+                'Danger' { 'badge-closed' }
+                'Fail'   { 'badge-closed' }
+                default  { 'badge-drop' }
+            }
+            $webSecBadges.Add("<span class='badge $rowColorClass'>Port $($row.Port) · $($row.Check): $($row.Status)</span>")
+        }
+        if ($Script:LanguageCode -eq 'tr') {
+            $ReportData.Web_Security_Summary = "$($webPortsProbed.Count) web servisi incelendi; $dangerCount kritik ve $warnCount uyarı bulgusu."
+        } else {
+            $ReportData.Web_Security_Summary = "$($webPortsProbed.Count) web service(s) analyzed; $dangerCount critical and $warnCount warning finding(s)."
+        }
+        $ReportData.Web_Security = $webSecBadges -join ' '
+    }
+
+    $solutionText = @{}
+    if ($Script:LanguageCode -eq 'tr') {
+        $solutionText['TRACE Method'] = 'TRACE metodu etkin; Cross-Site Tracing (XST) riski taşır. Sunucuda TRACE engellenmelidir (IIS: <verbs> TRACE engelle; Apache: TraceEnable Off; Nginx: TRACE isteklerini reddet).'
+        $solutionText['PUT'] = 'PUT metodu açık; yetkisiz içerik değişikliği riski. Yalnızca gerekli metodlara (GET/HEAD/POST/OPTIONS) izin verin.'
+        $solutionText['DELETE'] = 'DELETE metodu açık; yetkisiz kaynak silme riski. Yalnızca gerekli metodlara izin verin.'
+        $solutionText['PATCH'] = 'PATCH metodu açık; gerekli değilse kısıtlanmalıdır.'
+        $solutionText['Directory Listing'] = 'Klasör listeleme etkin; içerik ve sürüm ifşası riski. Directory browsing/autoindex kapatılmalı ve dizinlere index dosyası eklenmelidir.'
+        $solutionText['Server Banner'] = 'Sunucu banner bilgisi ifşa ediliyor; hedefli saldırı yüzeyi genişliyor. Banner ve sürüm üstbilgileri gizlenmelidir.'
+        $solutionText['X-Powered-By'] = 'Kullanılan teknoloji bileşenleri ifşa ediliyor. X-Powered-By gibi üstbilgiler kaldırılmalıdır.'
+        $solutionText['Cookie Flags'] = 'Çerezlerde Secure/HttpOnly/SameSite bayrakları eksik; XSS üzerinden oturum çalma riski. Çerezler Secure, HttpOnly ve SameSite=Lax/Strict ile işaretlenmelidir.'
+        $solutionText['HTTP to HTTPS'] = 'HTTP/80 trafiği HTTPS uç noktasına yönlendirmiyor; veriler şifrelemesiz ve müdahaleye açık. 301 kalıcı yönlendirme ve HSTS yapılandırılmalıdır.'
+        $solutionText['Security Header'] = 'Güvenlik başlığı zayıf veya eksik. HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy ve Permissions-Policy eklenmelidir.'
+    } else {
+        $solutionText['TRACE Method'] = 'The TRACE method is enabled, creating a Cross-Site Tracing (XST) risk. Disable TRACE on the server (IIS: block TRACE in <verbs>; Apache: TraceEnable Off; Nginx: reject TRACE requests).'
+        $solutionText['PUT'] = 'The PUT method is allowed, risking unauthorized content modification. Allow only the required methods (GET/HEAD/POST/OPTIONS).'
+        $solutionText['DELETE'] = 'The DELETE method is allowed, risking unauthorized resource deletion. Allow only the required methods.'
+        $solutionText['PATCH'] = 'The PATCH method is allowed; restrict it unless required.'
+        $solutionText['Directory Listing'] = 'Directory listing appears enabled, exposing content and versions. Disable directory browsing/autoindex and add index files.'
+        $solutionText['Server Banner'] = 'The server banner is disclosed, enlarging the targeted attack surface. Hide banner and version headers.'
+        $solutionText['X-Powered-By'] = 'Technology components are disclosed. Remove headers such as X-Powered-By.'
+        $solutionText['Cookie Flags'] = 'Cookies are missing Secure/HttpOnly/SameSite flags, risking session theft via XSS. Mark cookies Secure, HttpOnly, and SameSite=Lax/Strict.'
+        $solutionText['HTTP to HTTPS'] = 'HTTP/80 does not redirect to HTTPS; data is unencrypted and interceptable. Configure a permanent 301 redirect and HSTS.'
+        $solutionText['Security Header'] = 'A security header is weak or missing. Add HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, and Permissions-Policy.'
+    }
+    $headerSolutionMap = @{
+        'Strict-Transport-Security' = 'Security Header'
+        'Content-Security-Policy' = 'Security Header'
+        'X-Content-Type-Options' = 'Security Header'
+        'X-Frame-Options' = 'Security Header'
+        'Referrer-Policy' = 'Security Header'
+        'Permissions-Policy' = 'Security Header'
+    }
+    foreach ($row in $webSecRows) {
+        if ($row.Status -notin @('Danger','Warn','Fail')) { continue }
+        $solutionKey = if ($headerSolutionMap.ContainsKey([string]$row.Check)) { $headerSolutionMap[[string]$row.Check] } else { [string]$row.Check }
+        if (-not $solutionText.ContainsKey($solutionKey)) { continue }
+        $noteKey = "$($row.Port)|$solutionKey"
+        if ($webSecAdvised.ContainsKey($noteKey)) { continue }
+        $webSecAdvised[$noteKey] = $true
+        $severityPrefix = if ($row.Status -in @('Danger','Fail')) { '[!]' } else { '[i]' }
+        $AdvisorNotes.Add("$severityPrefix Port $($row.Port): $($solutionText[$solutionKey])")
+    }
 }
 
 Write-LogHeader '7. KÖK NEDEN VE ÇAPRAZ KORELASYON'
@@ -2669,7 +2943,8 @@ if($ExportHtmlPath){
         HTTPS_Cert_SAN='HTTPS Sertifika SAN Alanları'; HTTPS_Cert_SAN_Match='SAN Hostname Eşleşmesi'; HTTPS_Cert_Chain='Sertifika Zinciri Geçerliliği'; HTTPS_Cert_Chain_Status='Sertifika Zinciri Durumları'; HTTPS_Cert_Revocation='İptal (Revocation) Durumu'; HTTPS_Cert_Signature='Sertifika İmza Algoritması'; HTTPS_Cert_Valid='Sertifika Geçerlilik Penceresi';
         Wifi_Ssid='Wi-Fi Ağ Adı (SSID)'; Wifi_Signal_Percent='Wi-Fi Sinyal Gücü'; Wifi_Channel='Wi-Fi Kanalı'; Wifi_Radio_Type='Wi-Fi Radyo Tipi'; Wifi_Rx_Mbps='Wi-Fi Alış (RX) Hızı'; Wifi_Tx_Mbps='Wi-Fi Gönderim (TX) Hızı';
         Adapter_Status='Ağ Adaptörü Durumu'; Adapter_Link_Speed='Adaptör Bağlantı Hızı'; Adapter_Media='Adaptör Medya Tipi'; Adapter_Packet_Errors='Adaptör Paket Hataları';
-        Port_List='Taranan Portlar'
+        Port_List='Taranan Portlar';
+        Web_Security_Summary='Web Saldırı Yüzeyi Özeti'; Web_Security='Web Saldırı Yüzeyi Bulguları'
     }
     $rows = New-Object Text.StringBuilder
     foreach ($x in $ReportData.GetEnumerator()) {
@@ -2690,14 +2965,14 @@ if($ExportHtmlPath){
         }
 
         # Port_Matrix intentionally contains trusted badge HTML generated by this script.
-        if ($x.Key -in @('Port_Matrix','UDP_Port_Matrix','Security_Headers')) {
+        if ($x.Key -in @('Port_Matrix','UDP_Port_Matrix','Security_Headers','Web_Security')) {
             $value = ConvertTo-LocalizedReportValue $rawValue
         } else {
             $localizedValue = ConvertTo-LocalizedReportValue $rawValue
             $value = ConvertTo-HtmlSafe $localizedValue
         }
 
-        $wideClass = if ($x.Key -in @('Port_Matrix','UDP_Port_Matrix','Security_Headers')) { ' metric-item-wide' } else { '' }
+        $wideClass = if ($x.Key -in @('Port_Matrix','UDP_Port_Matrix','Security_Headers','Web_Security')) { ' metric-item-wide' } else { '' }
         [void]$rows.Append("<div class='metric-item$wideClass'><div class='metric-label'>$(ConvertTo-HtmlSafe $title)</div><div class='metric-value'>$value</div></div>`n")
     }
     $route = New-Object Text.StringBuilder
