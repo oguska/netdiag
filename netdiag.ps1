@@ -229,6 +229,10 @@ $Script:EnglishTranslations = [ordered]@{
     'DKIM kaydı bulunamadı.'='No DKIM record found.'
     'CAA kaydı bulunamadı.'='No CAA record found.'
     'DNS sızıntı kaydı bulunamadı.'='No DNS exposure records found.'
+    'DNS Sızıntı Özeti'='DNS Exposure Summary'
+    'Bulunan Kayıtlar'='Found Records'
+    'Eksik Kayıtlar'='Missing Records'
+    'Hiçbir DNS sızıntı kaydı bulunamadı.'='No DNS exposure records were found.'
     'Orta'='Moderate'
     'İyi'='Good'
     'Optimizasyon Önerileri'='Optimization Suggestions'
@@ -239,6 +243,13 @@ $Script:EnglishTranslations = [ordered]@{
     'Kuyruk latency sorunu'='Tail latency problem'
     'Zamanlama metrikleri sağlıklı görünüyor'='Timing metrics appear healthy'
     'DNS sızıntı kayıtları kontrol ediliyor (MX, SPF, DMARC, DKIM, CAA)...'='Checking DNS exposure records (MX, SPF, DMARC, DKIM, CAA)...'
+    'MX Kayıtları'='MX Records'
+    'SPF Kaydı'='SPF Record'
+    'DMARC Kaydı'='DMARC Record'
+    'DKIM Kaydı'='DKIM Record'
+    'CAA Kayıtları'='CAA Records'
+    'Bulundu'='Found'
+    'Eksik'='Missing'
     'MX records point to external mail providers'='MX kayıtları harici posta sağlayıcılarını işaret ediyor'
     'SPF policy'='SPF politikası'
     'DMARC policy'='DMARC politikası'
@@ -499,6 +510,14 @@ function Get-CompiledReportTranslations {
         $phraseList = @(
             @('Uygulama yük testi yapılmadı.','Application load testing was not performed.'),
             @('Hata yok','No errors'),
+            @('MX kaydı bulunamadı.','No MX record found.'),
+            @('SPF kaydı bulunamadı.','No SPF record found.'),
+            @('DMARC kaydı bulunamadı.','No DMARC record found.'),
+            @('DKIM kaydı bulunamadı.','No DKIM record found.'),
+            @('CAA kaydı bulunamadı.','No CAA record found.'),
+            @('Query failed','Sorgu başarısız'),
+            @('Missing','Eksik'),
+            @('Not found (common selectors)','Ortak seçicilerde bulunamadı'),
             @('Paket kaybı ile uygulama sorunları aynı ölçümde görüldü.','Packet loss and application issues were observed in the same measurement.'),
             @('Ağ değişkenliği uygulama yanıt dağılımını etkiliyor olabilir.','Network variation may be affecting the application response-time distribution.'),
             @('Uygulama, bağımlı servisler, veritabanı ve sunucu kaynakları incelenmelidir.','The application, dependent services, database, and server resources should be investigated.'),
@@ -2802,6 +2821,8 @@ try {
     if ($Target -ne $targetIP -and $ScanLevel -in @('Medium','Deep','JMeter','WebSec')) {
         Write-Status DNS 'DNS sızıntı kayıtları kontrol ediliyor (MX, SPF, DMARC, DKIM, CAA)...' Cyan
         $dnsExposure = @()
+        $dnsExposureFound = New-Object 'System.Collections.Generic.List[string]'
+        $dnsExposureMissing = New-Object 'System.Collections.Generic.List[string]'
 
         # MX records
         try {
@@ -2810,6 +2831,7 @@ try {
                 $mxList = [string]::Join('; ', @($mxRecords | ForEach-Object { "Priority $($_.Preference): $($_.NameExchange)" }))
                 $ReportData.DNS_MX_Records = $mxList
                 $dnsExposure += [pscustomobject]@{ Type='MX'; Detail=$mxList; Risk='Info' }
+                $dnsExposureFound.Add('MX') | Out-Null
                 # Check for external mail providers
                 $externalMx = $mxRecords | Where-Object { $_.NameExchange -notmatch "\.$(($Target -split '\.')[-2..-1] -join '\.')$" }
                 if ($externalMx.Count -gt 0) {
@@ -2820,9 +2842,10 @@ try {
             } else {
                 $ReportData.DNS_MX_Records = 'MX kaydı bulunamadı.'
                 $dnsExposure += [pscustomobject]@{ Type='MX'; Detail='MX kaydı bulunamadı.'; Risk='Info' }
+                $dnsExposureMissing.Add('MX') | Out-Null
                 Write-Status 'DNS-MX' 'MX kaydı bulunamadı.' Yellow
             }
-        } catch { $ReportData.DNS_MX_Records = 'Query failed' }
+        } catch { $ReportData.DNS_MX_Records = 'Query failed'; $dnsExposureMissing.Add('MX') | Out-Null }
 
         # SPF record (TXT with v=spf1)
         try {
@@ -2831,6 +2854,7 @@ try {
             if ($spfRecord) {
                 $ReportData.DNS_SPF_Record = $spfRecord
                 $dnsExposure += [pscustomobject]@{ Type='SPF'; Detail=$spfRecord; Risk='Info' }
+                $dnsExposureFound.Add('SPF') | Out-Null
                 # Check SPF all mechanism
                 if ($spfRecord -notmatch '\-all') {
                     if ($spfRecord -match '~all') { $risk='Warn'; $msg='SPF uses soft fail (~all); consider hard fail (-all)' }
@@ -2842,10 +2866,11 @@ try {
             } else {
                 $ReportData.DNS_SPF_Record = 'SPF kaydı bulunamadı.'
                 $dnsExposure += [pscustomobject]@{ Type='SPF'; Detail='SPF kaydı bulunamadı.'; Risk='Warn' }
+                $dnsExposureMissing.Add('SPF') | Out-Null
                 Write-Status 'DNS-SPF' 'SPF kaydı bulunamadı.' Yellow
                 if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] SPF kaydı bulunamadı; e-posta sahteciliği riski.')}else{$AdvisorNotes.Add('[!] SPF record missing; email spoofing risk.')}
             }
-        } catch { $ReportData.DNS_SPF_Record = 'Query failed' }
+        } catch { $ReportData.DNS_SPF_Record = 'Query failed'; $dnsExposureMissing.Add('SPF') | Out-Null }
 
         # DMARC record
         try {
@@ -2854,6 +2879,7 @@ try {
             if ($dmarcRecord) {
                 $ReportData.DNS_DMARC_Record = $dmarcRecord
                 $dnsExposure += [pscustomobject]@{ Type='DMARC'; Detail=$dmarcRecord; Risk='Info' }
+                $dnsExposureFound.Add('DMARC') | Out-Null
                 # Check DMARC policy
                 if ($dmarcRecord -notmatch 'p=reject') {
                     if ($dmarcRecord -match 'p=quarantine') { $risk='Warn'; $msg='DMARC policy is quarantine; consider p=reject' }
@@ -2865,10 +2891,11 @@ try {
             } else {
                 $ReportData.DNS_DMARC_Record = 'DMARC kaydı bulunamadı.'
                 $dnsExposure += [pscustomobject]@{ Type='DMARC'; Detail='DMARC kaydı bulunamadı.'; Risk='Warn' }
+                $dnsExposureMissing.Add('DMARC') | Out-Null
                 Write-Status 'DNS-DMARC' 'DMARC kaydı bulunamadı.' Yellow
                 if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] DMARC kaydı bulunamadı; e-posta sahteciliği koruması yok.')}else{$AdvisorNotes.Add('[!] DMARC record missing; no email spoofing protection.')}
             }
-        } catch { $ReportData.DNS_DMARC_Record = 'Query failed' }
+        } catch { $ReportData.DNS_DMARC_Record = 'Query failed'; $dnsExposureMissing.Add('DMARC') | Out-Null }
 
         # DKIM selectors (common ones)
         $dkimSelectors = @('default','selector1','selector2','google','k1','k2','mail','dkim','s1','s2')
@@ -2880,6 +2907,7 @@ try {
                 if ($dkimRecord) {
                     $ReportData.DNS_DKIM_Record = "Selector: $sel - $dkimRecord"
                     $dnsExposure += [pscustomobject]@{ Type='DKIM'; Detail="Selector ${sel}: $dkimRecord"; Risk='Info' }
+                    $dnsExposureFound.Add('DKIM') | Out-Null
                     $dkimFound = $true
                     break
                 }
@@ -2888,6 +2916,7 @@ try {
         if (-not $dkimFound) {
             $ReportData.DNS_DKIM_Record = 'DKIM kaydı bulunamadı.'
             $dnsExposure += [pscustomobject]@{ Type='DKIM'; Detail='DKIM kaydı bulunamadı.'; Risk='Warn' }
+            $dnsExposureMissing.Add('DKIM') | Out-Null
             Write-Status 'DNS-DKIM' 'DKIM kaydı bulunamadı.' Yellow
             if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] DKIM kaydı bulunamadı; e-posta imzalama yapılandırılmamış olabilir.')}else{$AdvisorNotes.Add('[!] DKIM record not found; email signing may not be configured.')}
         }
@@ -2898,15 +2927,24 @@ try {
             if ($caaRecords.Count -gt 0) {
                 $ReportData.DNS_CAA_Records = $caaRecords -join '; '
                 $dnsExposure += [pscustomobject]@{ Type='CAA'; Detail=$ReportData.DNS_CAA_Records; Risk='Info' }
+                $dnsExposureFound.Add('CAA') | Out-Null
             } else {
                 $ReportData.DNS_CAA_Records = 'CAA kaydı bulunamadı.'
                 $dnsExposure += [pscustomobject]@{ Type='CAA'; Detail='CAA kaydı bulunamadı.'; Risk='Info' }
+                $dnsExposureMissing.Add('CAA') | Out-Null
                 Write-Status 'DNS-CAA' 'CAA kaydı bulunamadı.' Green
             }
-        } catch { $ReportData.DNS_CAA_Records = 'Query failed' }
+        } catch { $ReportData.DNS_CAA_Records = 'Query failed'; $dnsExposureMissing.Add('CAA') | Out-Null }
 
         # Store exposure summary
         $ReportData.DNS_Exposure_Summary = [string]::Join(' | ', @($dnsExposure | ForEach-Object { "$($_.Type): $($_.Risk)" }))
+        if ($dnsExposureFound.Count -gt 0) {
+            $foundSummary = [string]::Join(', ', @($dnsExposureFound))
+            $missingSummary = if ($dnsExposureMissing.Count -gt 0) { [string]::Join(', ', @($dnsExposureMissing)) } else { '-' }
+            Write-Status 'DNS-EXPOSURE' "$(ConvertTo-LocalizedText 'Bulunan Kayıtlar'): $foundSummary | $(ConvertTo-LocalizedText 'Eksik Kayıtlar'): $missingSummary" Cyan
+        } else {
+            Write-Status 'DNS-EXPOSURE' 'Hiçbir DNS sızıntı kaydı bulunamadı.' Green
+        }
     }
 } catch {$ReportData.Local_DNS_IP='Çözümlenemedi';Write-Status DNS $_.Exception.Message Red;$AdvisorNotes.Add('[!] DNS çözümlenemedi; hedefe bağlı ağ testleri atlandı.')}
 
@@ -3839,6 +3877,36 @@ if($ExportHtmlPath){
     $networkMetricsTitle = ConvertTo-LocalizedText 'Ağ Metrikleri'
     $applicationMetricsTitle = ConvertTo-LocalizedText 'Uygulama Metrikleri'
     $metricsGridHtml = "<div class='metric-group-title'>$generalSystemTitle</div><div class='metric-grid'>$($rowsSystem.ToString())</div><div class='metric-group-title'>$networkMetricsTitle</div><div class='metric-grid'>$($rowsNetwork.ToString())</div><div class='metric-group-title'>$applicationMetricsTitle</div><div class='metric-grid'>$($rowsApplication.ToString())</div>"
+    $dnsExposureSection = ''
+    if ($ReportData.Contains('DNS_Exposure_Summary')) {
+        $dnsExposureTitle = ConvertTo-LocalizedText 'DNS Sızıntı Özeti'
+        $foundLabel = ConvertTo-LocalizedText 'Bulunan Kayıtlar'
+        $missingLabel = ConvertTo-LocalizedText 'Eksik Kayıtlar'
+        $foundStateLabel = ConvertTo-LocalizedText 'Bulundu'
+        $missingStateLabel = ConvertTo-LocalizedText 'Eksik'
+        $dnsRecords = @(
+            @{ Key='DNS_MX_Records'; Label='MX Kayıtları'; MissingRegex='(?i)(^MX kaydı bulunamadı\.?$|^No MX record found\.?$|^Query failed$)' },
+            @{ Key='DNS_SPF_Record'; Label='SPF Kaydı'; MissingRegex='(?i)(^SPF kaydı bulunamadı\.?$|^No SPF record found\.?$|^Query failed$)' },
+            @{ Key='DNS_DMARC_Record'; Label='DMARC Kaydı'; MissingRegex='(?i)(^DMARC kaydı bulunamadı\.?$|^No DMARC record found\.?$|^Query failed$)' },
+            @{ Key='DNS_DKIM_Record'; Label='DKIM Kaydı'; MissingRegex='(?i)(^DKIM kaydı bulunamadı\.?$|^No DKIM record found\.?$|^Not found \(common selectors\)$|^Query failed$)' },
+            @{ Key='DNS_CAA_Records'; Label='CAA Kayıtları'; MissingRegex='(?i)(^CAA kaydı bulunamadı\.?$|^No CAA record found\.?$|^Query failed$)' }
+        )
+        $dnsRows = New-Object Text.StringBuilder
+        $foundDnsRecords = New-Object System.Collections.Generic.List[string]
+        $missingDnsRecords = New-Object System.Collections.Generic.List[string]
+        foreach ($dnsRecord in $dnsRecords) {
+            $recordValue = if ($ReportData.Contains($dnsRecord.Key)) { [string]$ReportData[$dnsRecord.Key] } else { '' }
+            $isMissing = [string]::IsNullOrWhiteSpace($recordValue) -or ($recordValue -match $dnsRecord.MissingRegex)
+            $statusText = if ($isMissing) { $missingStateLabel } else { $foundStateLabel }
+            $statusClass = if ($isMissing) { 'badge-warning' } else { 'badge-open' }
+            if ($isMissing) { $null = $missingDnsRecords.Add((ConvertTo-LocalizedText $dnsRecord.Label)) } else { $null = $foundDnsRecords.Add((ConvertTo-LocalizedText $dnsRecord.Label)) }
+            [void]$dnsRows.Append("<tr><td>$(ConvertTo-HtmlSafe (ConvertTo-LocalizedText $dnsRecord.Label))</td><td><span class='badge $statusClass'>$(ConvertTo-HtmlSafe $statusText)</span></td><td>$(ConvertTo-HtmlSafe (ConvertTo-LocalizedReportValue $recordValue))</td></tr>`n")
+        }
+        $foundSummary = if ($foundDnsRecords.Count -gt 0) { [string]::Join(', ', @($foundDnsRecords)) } else { '—' }
+        $missingSummary = if ($missingDnsRecords.Count -gt 0) { [string]::Join(', ', @($missingDnsRecords)) } else { '—' }
+        $dnsExposureSection = "<section class='websec-section'><h3>$dnsExposureTitle</h3><div class='websec-summary'><strong>${foundLabel}:</strong> $foundSummary<br><strong>${missingLabel}:</strong> $missingSummary</div><table><thead><tr><th>$(ConvertTo-LocalizedText 'Denetim')</th><th>$(ConvertTo-LocalizedText 'Durum')</th><th>$(ConvertTo-LocalizedText 'Detay')</th></tr></thead><tbody>$($dnsRows.ToString())</tbody></table></section>"
+    }
+    $metricsGridHtml += $dnsExposureSection
     $route = New-Object Text.StringBuilder
     foreach ($r in $RouteReportRows) {
         [void]$route.Append(@"
