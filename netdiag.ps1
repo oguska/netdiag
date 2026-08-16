@@ -232,6 +232,13 @@ $Script:EnglishTranslations = [ordered]@{
     'TTFB değişkenliği yüksek'='High TTFB variability'
     'Kuyruk latency sorunu'='Tail latency problem'
     'Zamanlama metrikleri sağlıklı görünüyor'='Timing metrics appear healthy'
+    'Checking DNS exposure records (MX, SPF, DMARC, DKIM, CAA)...'='DNS sızıntı kayıtları kontrol ediliyor (MX, SPF, DMARC, DKIM, CAA)...'
+    'MX records point to external mail providers'='MX kayıtları harici posta sağlayıcılarını işaret ediyor'
+    'SPF policy'='SPF politikası'
+    'DMARC policy'='DMARC politikası'
+    'DMARC record missing'='DMARC kaydı bulunamadı'
+    'SPF record missing'='SPF kaydı bulunamadı'
+    'DKIM record not found'='DKIM kaydı bulunamadı'
     'Grafik oluşturmak için yeterli veri yok.'='Not enough data was available to generate the chart.'
     'Hop Katmanlı Rota, Gecikme ve Jitter Analizi'='Hop-by-Hop Route, Latency and Jitter Analysis'
     'Medyan'='Median'
@@ -2784,6 +2791,110 @@ try {
             if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[i] Alan adı DNSSEC imzalı; kimlik doğrulama zinciri güçlendirilmiş.')}else{$AdvisorNotes.Add('[i] The domain is DNSSEC-signed; the authentication chain is strengthened.')}
         }
     }
+
+    # DNS exposure checks: MX, TXT (SPF/DMARC/DKIM), CAA
+    if ($Target -ne $targetIP -and $ScanLevel -in @('Medium','Deep','JMeter','WebSec')) {
+        Write-Status DNS 'Checking DNS exposure records (MX, SPF, DMARC, DKIM, CAA)...' Cyan
+        $dnsExposure = @()
+
+        # MX records
+        try {
+            $mxRecords = @(Resolve-DnsName $Target -Type MX -ErrorAction SilentlyContinue | Sort-Object Preference | Select-Object Preference, NameExchange -Unique)
+            if ($mxRecords.Count -gt 0) {
+                $mxList = $mxRecords | ForEach-Object { "Priority $($_.Preference): $($_.NameExchange)" } -join '; '
+                $ReportData.DNS_MX_Records = $mxList
+                $dnsExposure += [pscustomobject]@{ Type='MX'; Detail=$mxList; Risk='Info' }
+                # Check for external mail providers
+                $externalMx = $mxRecords | Where-Object { $_.NameExchange -notmatch "\.$(($Target -split '\.')[-2..-1] -join '\.')$" }
+                if ($externalMx.Count -gt 0) {
+                    $extList = $externalMx | ForEach-Object { $_.NameExchange } -join '; '
+                    $dnsExposure += [pscustomobject]@{ Type='MX-External'; Detail="External mail providers: $extList"; Risk='Warn' }
+                    if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add("[!] MX kayıtları harici posta sağlayıcılarını işaret ediyor: $extList")}else{$AdvisorNotes.Add("[!] MX records point to external mail providers: $extList")}
+                }
+            } else {
+                $ReportData.DNS_MX_Records = 'None'
+            }
+        } catch { $ReportData.DNS_MX_Records = 'Query failed' }
+
+        # SPF record (TXT with v=spf1)
+        try {
+            $txtRecords = @(Resolve-DnsName $Target -Type TXT -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Strings -ErrorAction SilentlyContinue)
+            $spfRecord = $txtRecords | Where-Object { $_ -like 'v=spf1*' } | Select-Object -First 1
+            if ($spfRecord) {
+                $ReportData.DNS_SPF_Record = $spfRecord
+                $dnsExposure += [pscustomobject]@{ Type='SPF'; Detail=$spfRecord; Risk='Info' }
+                # Check SPF all mechanism
+                if ($spfRecord -notmatch '\-all') {
+                    if ($spfRecord -match '~all') { $risk='Warn'; $msg='SPF uses soft fail (~all); consider hard fail (-all)' }
+                    elseif ($spfRecord -match '\+all') { $risk='Danger'; $msg='SPF allows all (+all); misconfiguration risk' }
+                    else { $risk='Warn'; $msg='SPF missing explicit all mechanism' }
+                    $dnsExposure += [pscustomobject]@{ Type='SPF-Policy'; Detail=$msg; Risk=$risk }
+                    if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add("[!] SPF politikası: $msg")}else{$AdvisorNotes.Add("[!] SPF policy: $msg")}
+                }
+            } else {
+                $ReportData.DNS_SPF_Record = 'Missing'
+                $dnsExposure += [pscustomobject]@{ Type='SPF'; Detail='SPF record missing'; Risk='Warn' }
+                if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] SPF kaydı bulunamadı; e-posta sahteciliği riski.')}else{$AdvisorNotes.Add('[!] SPF record missing; email spoofing risk.')}
+            }
+        } catch { $ReportData.DNS_SPF_Record = 'Query failed' }
+
+        # DMARC record
+        try {
+            $dmarcRecords = @(Resolve-DnsName "_dmarc.$Target" -Type TXT -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Strings -ErrorAction SilentlyContinue)
+            $dmarcRecord = $dmarcRecords | Where-Object { $_ -like 'v=DMARC1*' } | Select-Object -First 1
+            if ($dmarcRecord) {
+                $ReportData.DNS_DMARC_Record = $dmarcRecord
+                $dnsExposure += [pscustomobject]@{ Type='DMARC'; Detail=$dmarcRecord; Risk='Info' }
+                # Check DMARC policy
+                if ($dmarcRecord -notmatch 'p=reject') {
+                    if ($dmarcRecord -match 'p=quarantine') { $risk='Warn'; $msg='DMARC policy is quarantine; consider p=reject' }
+                    elseif ($dmarcRecord -match 'p=none') { $risk='Warn'; $msg='DMARC policy is none (monitor only); no enforcement' }
+                    else { $risk='Warn'; $msg='DMARC missing explicit policy' }
+                    $dnsExposure += [pscustomobject]@{ Type='DMARC-Policy'; Detail=$msg; Risk=$risk }
+                    if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add("[!] DMARC politikası: $msg")}else{$AdvisorNotes.Add("[!] DMARC policy: $msg")}
+                }
+            } else {
+                $ReportData.DNS_DMARC_Record = 'Missing'
+                $dnsExposure += [pscustomobject]@{ Type='DMARC'; Detail='DMARC record missing'; Risk='Warn' }
+                if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] DMARC kaydı bulunamadı; e-posta sahteciliği koruması yok.')}else{$AdvisorNotes.Add('[!] DMARC record missing; no email spoofing protection.')}
+            }
+        } catch { $ReportData.DNS_DMARC_Record = 'Query failed' }
+
+        # DKIM selectors (common ones)
+        $dkimSelectors = @('default','selector1','selector2','google','k1','k2','mail','dkim','s1','s2')
+        $dkimFound = $false
+        foreach ($sel in $dkimSelectors) {
+            try {
+                $dkimRecords = @(Resolve-DnsName "$sel._domainkey.$Target" -Type TXT -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Strings -ErrorAction SilentlyContinue)
+                $dkimRecord = $dkimRecords | Where-Object { $_ -like 'v=DKIM1*' } | Select-Object -First 1
+                if ($dkimRecord) {
+                    $ReportData.DNS_DKIM_Record = "Selector: $sel - $dkimRecord"
+                    $dnsExposure += [pscustomobject]@{ Type='DKIM'; Detail="Selector $sel: $dkimRecord"; Risk='Info' }
+                    $dkimFound = $true
+                    break
+                }
+            } catch {}
+        }
+        if (-not $dkimFound) {
+            $ReportData.DNS_DKIM_Record = 'Not found (common selectors)'
+            $dnsExposure += [pscustomobject]@{ Type='DKIM'; Detail='No DKIM record found for common selectors'; Risk='Warn' }
+            if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] DKIM kaydı bulunamadı; e-posta imzalama yapılandırılmamış olabilir.')}else{$AdvisorNotes.Add('[!] DKIM record not found; email signing may not be configured.')}
+        }
+
+        # CAA records
+        try {
+            $caaRecords = @(Resolve-DnsName $Target -Type CAA -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Strings -ErrorAction SilentlyContinue)
+            if ($caaRecords.Count -gt 0) {
+                $ReportData.DNS_CAA_Records = $caaRecords -join '; '
+                $dnsExposure += [pscustomobject]@{ Type='CAA'; Detail=$ReportData.DNS_CAA_Records; Risk='Info' }
+            } else {
+                $ReportData.DNS_CAA_Records = 'Missing'
+            }
+        } catch { $ReportData.DNS_CAA_Records = 'Query failed' }
+
+        # Store exposure summary
+        $ReportData.DNS_Exposure_Summary = $dnsExposure | ForEach-Object { "$($_.Type): $($_.Risk)" } -join ' | '
+    }
 } catch {$ReportData.Local_DNS_IP='Çözümlenemedi';Write-Status DNS $_.Exception.Message Red;$AdvisorNotes.Add('[!] DNS çözümlenemedi; hedefe bağlı ağ testleri atlandı.')}
 
 $icmpAvailable=$false;$unloadedAvgRtt=$null;$maxWorkingMtu=$null
@@ -3646,7 +3757,7 @@ if($ExportHtmlPath){
         HTTPS_Certificate_Status='HTTPS Sertifika Durumu'; HTTPS_Certificate_NotBefore='HTTPS Sertifika Başlangıcı'; HTTPS_Certificate_NotAfter='HTTPS Sertifika Bitişi'; Effective_Load_Test_URL='Etkin Yük Testi URL''si'; Load_Test_Status='HTTP Yük Testi Durumu'; JMeter_Engine='HTTP Yük Test Motoru'; JMeter_Method='HTTP Metodu'; JMeter_Peak_Concurrency='Ölçülen En Yüksek Eşzamanlı İstek'; JMeter_RampUp='Ramp-up Süresi'; JMeter_Warmup_Requests='Warm-up İstek Sayısı'; JMeter_Successful_Requests='Başarılı HTTP İsteği'; JMeter_Failed_Requests='Başarısız HTTP İsteği'; JMeter_Test_Duration='Toplam Yük Testi Süresi'; JMeter_Avg_Header_Time='Ortalama Header / TTFB Süresi'; JMeter_p95_Header_Time='p95 Header / TTFB Süresi';         JMeter_Avg_Download_Time='Ortalama Response İndirme Süresi'; JMeter_Avg_Elapsed='Ortalama Toplam HTTP Süresi'; JMeter_Elapsed_StdDev='HTTP Süre Standart Sapması'; JMeter_p50_Elapsed='p50 Toplam HTTP Süresi'; JMeter_p75_Elapsed='p75 Toplam HTTP Süresi'; JMeter_p90_Elapsed='p90 Toplam HTTP Süresi'; JMeter_p95_Elapsed='p95 Toplam HTTP Süresi'; JMeter_p99_Elapsed='p99 Toplam HTTP Süresi'; JMeter_TTFB_p50='p50 Header / TTFB Süresi'; JMeter_TTFB_p90='p90 Header / TTFB Süresi'; JMeter_TTFB_p99='p99 Header / TTFB Süresi'; JMeter_TTFB_Spread='TTFB Yayılımı'; JMeter_Tail_Ratio='Kuyruk Oranı (p99/p50)'; JMeter_Spread_ms='Gecikme Yayılımı (p99-p50)'; JMeter_Min_Elapsed='En Düşük HTTP Süresi'; JMeter_Max_Elapsed='En Yüksek HTTP Süresi'; JMeter_Status_Distribution='HTTP Durum Kodu Dağılımı'; JMeter_Error_Distribution='HTTP Hata Tipi Dağılımı'; JMeter_Total_Data='Toplam Alınan Response Verisi'; JMeter_Average_Response_Size='Ortalama Response Boyutu'; JMeter_Download_Throughput='Response Veri Aktarım Hızı';
         TLS_Supported_Versions='Desteklenen TLS Sürümleri'; TLS_Negotiated_Protocol='Müzakere Edilen TLS Sürümü'; TLS_Negotiated_Cipher='Müzakere Edilen Şifreleme'; HTTP_Version_ALPN='HTTP Protokolü (ALPN)'; HTTP2_Status='HTTP/2 Durumu'; HTTP3_QUIC_Status='HTTP/3 (QUIC) Durumu'; Security_Header_Score='Güvenlik Başlığı Puanı'; Security_Headers='Güvenlik Başlığı Denetimi';
         GeoIP_Target_ASN='Hedef ASN / Ağ Sağlayıcı'; GeoIP_Target_Location='Hedef Coğrafi Konum'; GeoIP_Target_ISP='Hedef İSS / Organizasyon'; GeoIP_Hop_ASN='Yol Üzerindeki Ağlar (ASN)';
-        DNSSEC_Status='DNSSEC Durumu'; DNS_DoT_Status='DNS-over-TLS (853) Durumu'; DNS_DoH_Status='DNS-over-HTTPS Durumu'; DNS_Resolver_Consistency='Çözümleyici Tutarlılığı (UDP/DoT/DoH)';
+        DNSSEC_Status='DNSSEC Durumu'; DNS_DoT_Status='DNS-over-TLS (853) Durumu'; DNS_DoH_Status='DNS-over-HTTPS Durumu'; DNS_Resolver_Consistency='Çözümleyici Tutarlılığı (UDP/DoT/DoH)'; DNS_MX_Records='MX Kayıtları'; DNS_SPF_Record='SPF Kaydı'; DNS_DMARC_Record='DMARC Kaydı'; DNS_DKIM_Record='DKIM Kaydı'; DNS_CAA_Records='CAA Kayıtları'; DNS_Exposure_Summary='DNS Sızıntı Özeti';
         HTTPS_Cert_SAN='HTTPS Sertifika SAN Alanları'; HTTPS_Cert_SAN_Match='SAN Hostname Eşleşmesi'; HTTPS_Cert_Chain='Sertifika Zinciri Geçerliliği'; HTTPS_Cert_Chain_Status='Sertifika Zinciri Durumları'; HTTPS_Cert_Revocation='İptal (Revocation) Durumu'; HTTPS_Cert_Signature='Sertifika İmza Algoritması'; HTTPS_Cert_Valid='Sertifika Geçerlilik Penceresi';
         Wifi_Ssid='Wi-Fi Ağ Adı (SSID)'; Wifi_Signal_Percent='Wi-Fi Sinyal Gücü'; Wifi_Channel='Wi-Fi Kanalı'; Wifi_Radio_Type='Wi-Fi Radyo Tipi'; Wifi_Rx_Mbps='Wi-Fi Alış (RX) Hızı'; Wifi_Tx_Mbps='Wi-Fi Gönderim (TX) Hızı';
         Adapter_Status='Ağ Adaptörü Durumu'; Adapter_Link_Speed='Adaptör Bağlantı Hızı'; Adapter_Media='Adaptör Medya Tipi'; Adapter_Packet_Errors='Adaptör Paket Hataları';
@@ -3670,7 +3781,8 @@ if($ExportHtmlPath){
         'JMeter_Status_Distribution','JMeter_Error_Distribution','JMeter_Total_Data','JMeter_Average_Response_Size','JMeter_Download_Throughput',
         'TLS_Supported_Versions','TLS_Negotiated_Protocol','TLS_Negotiated_Cipher','HTTP_Version_ALPN','HTTP2_Status','HTTP3_QUIC_Status',
         'Security_Header_Score','Security_Headers',
-        'HTTPS_Cert_SAN','HTTPS_Cert_SAN_Match','HTTPS_Cert_Chain','HTTPS_Cert_Chain_Status','HTTPS_Cert_Revocation','HTTPS_Cert_Signature','HTTPS_Cert_Valid'
+        'HTTPS_Cert_SAN','HTTPS_Cert_SAN_Match','HTTPS_Cert_Chain','HTTPS_Cert_Chain_Status','HTTPS_Cert_Revocation','HTTPS_Cert_Signature','HTTPS_Cert_Valid',
+        'DNS_MX_Records','DNS_SPF_Record','DNS_DMARC_Record','DNS_DKIM_Record','DNS_CAA_Records','DNS_Exposure_Summary'
     )
     $rowsSystem = New-Object Text.StringBuilder
     $rowsNetwork = New-Object Text.StringBuilder
