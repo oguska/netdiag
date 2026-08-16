@@ -91,6 +91,10 @@ $Script:EnglishTranslations = [ordered]@{
     'Web güvenliği: tüm Deep analizine ek olarak HTTP/HTTPS servisleri için yaygın web saldırı yüzeyi ve çözüm önerileri.'='Web security: all Deep analysis plus common web attack-surface checks and solution advice for HTTP/HTTPS services.'
     'Web Saldırı Yüzeyi Özeti'='Web Attack-Surface Summary'
     'Web Saldırı Yüzeyi Bulguları'='Web Attack-Surface Findings'
+    'Çözüm Önerileri'='Solution Advice'
+    'Port'='Port'
+    'Denetim'='Check'
+    'Detay'='Detail'
     'HTML rapor kaydedilsin mi?'='Save HTML report?'
     'Yol'='Path'
     'opsiyonel'='optional'
@@ -1655,6 +1659,247 @@ function Test-WebSecuritySurface {
     return $items.ToArray()
 }
 
+function Test-WebPageAnalyzer {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][ValidateRange(1,65535)][int]$Port,
+        [ValidateSet('http','https')][string]$Protocol,
+        [ValidateRange(1,120)][int]$TimeoutSec = 5
+    )
+    $items = New-Object 'System.Collections.Generic.List[object]'
+    $baseUrl = "${Protocol}://${ComputerName}:${Port}/"
+    $probeHeaders = @{ 'User-Agent' = 'NetDiag-WebSec/1.0'; 'Accept' = '*/*' }
+    $old = [Net.ServicePointManager]::ServerCertificateValidationCallback
+    try {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+
+        $openProbeStream = {
+            param($probeTarget, [Net.Sockets.TcpClient]$probeTcp)
+            $probeNet = $probeTcp.GetStream()
+            $probeNet.ReadTimeout = $TimeoutSec * 1000
+            $probeNet.WriteTimeout = $TimeoutSec * 1000
+            if ($Protocol -eq 'https') {
+                $probeSsl = New-Object Net.Security.SslStream($probeNet, $false, { $true })
+                $probeSsl.AuthenticateAsClient($probeTarget)
+                return $probeSsl
+            }
+            return $probeNet
+        }
+
+        $pageResponse = $null
+        try { $pageResponse = Invoke-WebRequest -Uri $baseUrl -Method Get -Headers $probeHeaders -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop } catch { $pageResponse = $null }
+        if (-not $pageResponse) { return @($items.ToArray()) }
+        $bodyText = ''
+        try { $bodyText = [string]$pageResponse.Content } catch { $bodyText = '' }
+        $responseHeaders = @{}
+        if ($pageResponse.Headers) { foreach ($headerKey in $pageResponse.Headers.Keys) { $responseHeaders[$headerKey] = [string]$pageResponse.Headers[$headerKey] } }
+
+        $rateLimitPatterns = @('x-ratelimit','x-rate-limit','ratelimit','retry-after','x-requests-per')
+        $wafMarkers = @('cloudflare','cloudfront','akamai','sucuri','incapsula','imperva','barracuda','fastly','x-cdn','cf-ray','x-waf','aws')
+        $floodEvidence = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($headerKey in $responseHeaders.Keys) {
+            $headerValue = $responseHeaders[$headerKey]
+            foreach ($ratePattern in $rateLimitPatterns) { if ($headerKey -like "*$ratePattern*") { $floodEvidence.Add("Rate limiting ($headerKey)"); break } }
+            foreach ($wafMarker in $wafMarkers) { if ($headerValue -match $wafMarker -or $headerKey -match $wafMarker) { $floodEvidence.Add("WAF/CDN (${headerKey}: $wafMarker)"); break } }
+        }
+        if ($floodEvidence.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='HTTP Flood'; Status='Pass'; Detail=("Flood mitigation evidence: " + ($floodEvidence -join '; ')) })
+        } else {
+            $items.Add([pscustomobject]@{ Check='HTTP Flood'; Status='Warn'; Detail='No rate-limiting or WAF/CDN evidence found; GET/POST floods could exhaust server CPU and memory' })
+        }
+
+        $heldConnections = 0
+        $connectFailures = 0
+        $maxHoldMilliseconds = 0
+        foreach ($attempt in @(1,2)) {
+            $tcp = New-Object Net.Sockets.TcpClient
+            $probeNet = $null
+            try {
+                $connectResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
+                if (-not $connectResult.AsyncWaitHandle.WaitOne(($TimeoutSec * 1000), $false)) { $connectFailures++; continue }
+                $tcp.EndConnect($connectResult)
+                $probeNet = & $openProbeStream $ComputerName $tcp
+                if (-not $probeNet) { $connectFailures++; continue }
+                $partialRequest = "GET / HTTP/1.1`r`nHost: ${ComputerName}:${Port}`r`nUser-Agent: NetDiag-WebSec/1.0`r`nX-NetDiag: "
+                $partialBytes = [Text.Encoding]::ASCII.GetBytes($partialRequest)
+                $probeNet.Write($partialBytes, 0, $partialBytes.Length)
+                $probeBuffer = New-Object byte[] 1
+                $readResult = $probeNet.BeginRead($probeBuffer, 0, 1, $null, $null)
+                $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+                $responded = $false
+                $closed = $false
+                while ($stopwatch.ElapsedMilliseconds -lt ($TimeoutSec * 1000)) {
+                    Start-Sleep -Milliseconds 150
+                    if ($readResult.IsCompleted) { if ($probeBuffer[0] -ne 0) { $responded = $true } else { $closed = $true }; break }
+                }
+                $stopwatch.Stop()
+                if ($readResult.IsCompleted) { try { $null = $probeNet.EndRead($readResult) } catch {} }
+                if ($stopwatch.ElapsedMilliseconds -gt $maxHoldMilliseconds) { $maxHoldMilliseconds = [int]$stopwatch.ElapsedMilliseconds }
+                if ($responded) { break }
+                if (-not $closed) { $heldConnections++ }
+            } catch { $connectFailures++ }
+            finally {
+                try { if ($probeNet) { $probeNet.Dispose() } } catch {}
+                try { $tcp.Close() } catch {}
+            }
+        }
+        if ($connectFailures -ge 2) {
+            $items.Add([pscustomobject]@{ Check='Slowloris'; Status='Error'; Detail='Slowloris probe connections could not be established' })
+        } elseif ($heldConnections -ge 1) {
+            $items.Add([pscustomobject]@{ Check='Slowloris'; Status='Warn'; Detail="Server kept $heldConnections open connection(s) alive for >${maxHoldMilliseconds} ms with a partial request; Slowloris-style resource tie-up is possible" })
+        } else {
+            $items.Add([pscustomobject]@{ Check='Slowloris'; Status='Pass'; Detail='Server closed or answered partial requests quickly (connection timeout configured)' })
+        }
+
+        $formBlocks = @([regex]::Matches($bodyText, '(?is)<form\b[^>]*>.*?</form>'))
+        $postFormsWithoutToken = New-Object 'System.Collections.Generic.List[string]'
+        $injectionCandidates = New-Object 'System.Collections.Generic.List[string]'
+        $seenCandidate = @{}
+        foreach ($formBlock in $formBlocks) {
+            $action = '/'
+            if ($formBlock.Value -match '(?i)\baction\s*=\s*["'']([^"'']+)["'']') { $action = $matches[1] }
+            $method = 'get'
+            if ($formBlock.Value -match '(?i)\bmethod\s*=\s*["''](post|get)["'']') { $method = $matches[1].ToLowerInvariant() }
+            $hasCsrfToken = $formBlock.Value -match '(?i)\bname\s*=\s*["''](?:[^"'']*(?:csrf|token|authenticity)[^"'']*)["'']'
+            foreach ($inputMatch in @([regex]::Matches($formBlock.Value, '(?i)<input\b[^>]*\bname\s*=\s*["'']([^"'']+)["'']'))) {
+                $fieldName = $inputMatch.Groups[1].Value
+                if ($fieldName -and -not $seenCandidate.ContainsKey($fieldName)) { $seenCandidate[$fieldName] = $true; $injectionCandidates.Add($fieldName) }
+            }
+            if ($method -eq 'post' -and -not $hasCsrfToken) { $postFormsWithoutToken.Add($action) }
+        }
+        if ($postFormsWithoutToken.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='CSRF'; Status='Warn'; Detail=("POST form(s) without a visible CSRF token: " + ($postFormsWithoutToken -join '; ')) })
+        } else {
+            $items.Add([pscustomobject]@{ Check='CSRF'; Status='Pass'; Detail='No POST form without a visible CSRF token found' })
+        }
+
+        foreach ($commonParam in @('id','q','search','name','page','user','category','file','url','pid','product','cmd','query','login','email')) {
+            if (-not $seenCandidate.ContainsKey($commonParam)) { $seenCandidate[$commonParam] = $true; $injectionCandidates.Add($commonParam) }
+        }
+        $probeParams = @($injectionCandidates | Select-Object -First 3)
+        $sqlErrorPattern = '(?i)sql\s*syntax|sqlstate|ora-\d{5}|unclosed quotation|microsoft\s+ole\s+db|mysql_\w+\(|postgresql.*error|syntax\s+error\s+near|you\s+have\s+an\s+error\s+in\s+your\s+sql|quoted\s+string\s+not\s+properly\s+terminated|division\s+by\s+zero\s+in|sqlite'
+
+        $sqlInjectionFound = $null
+        foreach ($param in $probeParams) {
+            if ($sqlInjectionFound) { break }
+            foreach ($payload in @("'", "1%27OR%271%27%3D%271", "1%27AND%20%27x%27%3D%27x")) {
+                try {
+                    $probe = Invoke-WebRequest -Uri "${baseUrl}?${param}=${payload}" -Method Get -Headers $probeHeaders -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop
+                    $probeBody = ''
+                    try { $probeBody = [string]$probe.Content } catch { $probeBody = '' }
+                    if ($probeBody -match $sqlErrorPattern) { $sqlInjectionFound = $param; break }
+                } catch {}
+            }
+        }
+        if ($sqlInjectionFound) {
+            $items.Add([pscustomobject]@{ Check='SQL Injection'; Status='Danger'; Detail="SQL error signature found while probing parameter '$sqlInjectionFound'; SQL injection is possible" })
+        } else {
+            $items.Add([pscustomobject]@{ Check='SQL Injection'; Status='Pass'; Detail='No SQL error signature observed in URL parameter probes' })
+        }
+
+        $xssReflected = $null
+        foreach ($param in $probeParams) {
+            if ($xssReflected) { break }
+            $payload = '%3Cscript%3Enetdiagxss%3C%2Fscript%3E'
+            try {
+                $probe = Invoke-WebRequest -Uri "${baseUrl}?${param}=${payload}" -Method Get -Headers $probeHeaders -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop
+                $probeBody = ''
+                try { $probeBody = [string]$probe.Content } catch { $probeBody = '' }
+                if ($probeBody -match '(?i)<script>netdiagxss</script>|netdiagxss') { $xssReflected = $param; break }
+            } catch {}
+        }
+        if ($xssReflected) {
+            $items.Add([pscustomobject]@{ Check='XSS'; Status='Warn'; Detail="JavaScript payload reflected by parameter '$xssReflected'; reflected XSS is possible" })
+        } else {
+            $items.Add([pscustomobject]@{ Check='XSS'; Status='Pass'; Detail='No obvious reflection of a script payload in URL parameter probes' })
+        }
+
+        $hostHeaderValue = 'netdiag-test.invalid'
+        $hostReflected = $false
+        $hostResponseStatus = ''
+        try {
+            $tcp = New-Object Net.Sockets.TcpClient
+            $probeNet = $null
+            try {
+                $connectResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
+                if ($connectResult.AsyncWaitHandle.WaitOne(($TimeoutSec * 1000), $false)) {
+                    $tcp.EndConnect($connectResult)
+                    $probeNet = & $openProbeStream $ComputerName $tcp
+                    if ($probeNet) {
+                        $requestText = "GET / HTTP/1.1`r`nHost: $hostHeaderValue`r`nUser-Agent: NetDiag-WebSec/1.0`r`nConnection: close`r`n`r`n"
+                        $requestBytes = [Text.Encoding]::ASCII.GetBytes($requestText)
+                        $probeNet.Write($requestBytes, 0, $requestBytes.Length)
+                        $rawHostResponse = [Text.Encoding]::ASCII.GetString((Read-NetworkBytes -Stream $probeNet -MaximumBytes 2048))
+                        if ($rawHostResponse -match '^HTTP/\S+\s+(\d{3})') { $hostResponseStatus = $matches[1] }
+                        if ($rawHostResponse -match [regex]::Escape($hostHeaderValue)) { $hostReflected = $true }
+                    }
+                }
+            }
+            finally {
+                try { if ($probeNet) { $probeNet.Dispose() } } catch {}
+                try { $tcp.Close() } catch {}
+            }
+        } catch {}
+        if ($hostReflected) {
+            $items.Add([pscustomobject]@{ Check='HTTP Host Header'; Status='Warn'; Detail="Arbitrary Host header value was reflected in the response; host-header poisoning (cache/password reset) is possible" })
+        } elseif ($hostResponseStatus -eq '200') {
+            $items.Add([pscustomobject]@{ Check='HTTP Host Header'; Status='Warn'; Detail='Unknown Host header was accepted with a 200 response; host-header validation may be missing' })
+        } elseif ($hostResponseStatus) {
+            $items.Add([pscustomobject]@{ Check='HTTP Host Header'; Status='Pass'; Detail="Unknown Host header rejected (HTTP $hostResponseStatus); no reflection observed" })
+        } else {
+            $items.Add([pscustomobject]@{ Check='HTTP Host Header'; Status='Error'; Detail='Host header probe did not produce a response' })
+        }
+
+        $crlfFound = $false
+        try {
+            $tcp = New-Object Net.Sockets.TcpClient
+            $probeNet = $null
+            try {
+                $connectResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
+                if ($connectResult.AsyncWaitHandle.WaitOne(($TimeoutSec * 1000), $false)) {
+                    $tcp.EndConnect($connectResult)
+                    $probeNet = & $openProbeStream $ComputerName $tcp
+                    if ($probeNet) {
+                        $requestText = "GET /?q=%0d%0aX-NetDiag-Test:%20netdiagcrlf%0d%0aX-Extra:%201 HTTP/1.1`r`nHost: ${ComputerName}:${Port}`r`nUser-Agent: NetDiag-WebSec/1.0`r`nConnection: close`r`n`r`n"
+                        $requestBytes = [Text.Encoding]::ASCII.GetBytes($requestText)
+                        $probeNet.Write($requestBytes, 0, $requestBytes.Length)
+                        $rawCrlfResponse = [Text.Encoding]::ASCII.GetString((Read-NetworkBytes -Stream $probeNet -MaximumBytes 2048))
+                        if ($rawCrlfResponse -match '(?im)^X-NetDiag-Test:\s*netdiagcrlf') { $crlfFound = $true }
+                    }
+                }
+            }
+            finally {
+                try { if ($probeNet) { $probeNet.Dispose() } } catch {}
+                try { $tcp.Close() } catch {}
+            }
+        } catch {}
+        if ($crlfFound) {
+            $items.Add([pscustomobject]@{ Check='CRLF Injection'; Status='Danger'; Detail='Injected CRLF header was returned by the server; HTTP response splitting is possible' })
+        } else {
+            $items.Add([pscustomobject]@{ Check='CRLF Injection'; Status='Pass'; Detail='No injected header observed in the response' })
+        }
+
+        if ($Protocol -eq 'http') {
+            $items.Add([pscustomobject]@{ Check='Man-in-the-Middle'; Status='Danger'; Detail='Plain HTTP carries traffic in clear text; traffic can be intercepted or altered between the user and the server' })
+        } else {
+            $hstsHeader = @($responseHeaders.Keys | Where-Object { $_ -match '(?i)^Strict-Transport-Security$' })
+            if ($hstsHeader.Count -gt 0) {
+                $items.Add([pscustomobject]@{ Check='Man-in-the-Middle'; Status='Pass'; Detail='TLS encrypts traffic and HSTS is configured' })
+            } else {
+                $items.Add([pscustomobject]@{ Check='Man-in-the-Middle'; Status='Warn'; Detail='TLS encrypts traffic but HSTS is missing; first-request downgrade attacks remain possible' })
+            }
+        }
+    }
+    catch {
+        $items.Add([pscustomobject]@{ Check='Page Analyzer'; Status='Error'; Detail=$_.Exception.Message })
+    }
+    finally {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $old
+    }
+    return @($items.ToArray())
+}
+
 function Get-GeoIpInfo {
     [CmdletBinding()]
     param(
@@ -2685,10 +2930,13 @@ if($dnsOk -and $ScanLevel -in @('Deep','WebSec') -and ($Port -in @(80,443,8080,8
     }catch{Write-Status HTTP $_.Exception.Message Red}finally{[Net.ServicePointManager]::ServerCertificateValidationCallback=$old}
 }
 
+$webSecRows = @()
+$webSecSummaryText = ''
+$webSecAdvices = @()
 if ($dnsOk -and $ScanLevel -eq 'WebSec') {
     Write-LogHeader '6b. WEB SALDIRI YÜZEYİ ANALİZİ VE ÇÖZÜM ÖNERİLERİ'
     $webSecRows = New-Object 'System.Collections.Generic.List[object]'
-    $webSecBadges = New-Object 'System.Collections.Generic.List[string]'
+    $webSecAdvices = New-Object 'System.Collections.Generic.List[string]'
     $webSecAdvised = @{}
     $dangerCount = 0
     $warnCount = 0
@@ -2716,8 +2964,8 @@ if ($dnsOk -and $ScanLevel -eq 'WebSec') {
         }
         if (-not $isWeb) { continue }
         $webPortsProbed += $wp
-        Write-Status "WEBSEC-$wp" "$wpProto servisi doğrulandı; saldırı yüzeyi analiz ediliyor..." Cyan
-        $surfaceItems = @(Test-WebSecuritySurface -ComputerName $Target -Port $wp -Protocol $wpProto -TimeoutSec $HttpTimeoutSec)
+        Write-Status "WEBSEC-$wp" "$wpProto servisi doğrulandı; saldırı yüzeyi ve sayfa analizi yapılıyor..." Cyan
+        $surfaceItems = @(Test-WebSecuritySurface -ComputerName $Target -Port $wp -Protocol $wpProto -TimeoutSec $HttpTimeoutSec) + @(Test-WebPageAnalyzer -ComputerName $Target -Port $wp -Protocol $wpProto -TimeoutSec $HttpTimeoutSec)
         foreach ($surfaceItem in $surfaceItems) {
             $surfaceItem | Add-Member -NotePropertyName Port -NotePropertyValue $wp -Force
             $webSecRows.Add($surfaceItem)
@@ -2736,29 +2984,16 @@ if ($dnsOk -and $ScanLevel -eq 'WebSec') {
 
     if ($webPortsProbed.Count -eq 0) {
         if ($Script:LanguageCode -eq 'tr') {
-            $ReportData.Web_Security_Summary = 'Açık HTTP/HTTPS servisi bulunamadı; web saldırı yüzeyi analizi yapılmadı.'
             $AdvisorNotes.Add('[i] WebSec seviyesinde açık HTTP/HTTPS servisi tespit edilmedi; saldırı yüzeyi analizi atlandı.')
         } else {
-            $ReportData.Web_Security_Summary = 'No open HTTP/HTTPS service was found; web attack-surface analysis was not performed.'
             $AdvisorNotes.Add('[i] No open HTTP/HTTPS service was detected at the WebSec level; the attack-surface analysis was skipped.')
         }
     } else {
-        foreach ($row in $webSecRows) {
-            $rowColorClass = switch ($row.Status) {
-                'Pass'   { 'badge-open' }
-                'Warn'   { 'badge-warning' }
-                'Danger' { 'badge-closed' }
-                'Fail'   { 'badge-closed' }
-                default  { 'badge-drop' }
-            }
-            $webSecBadges.Add("<span class='badge $rowColorClass'>Port $($row.Port) · $($row.Check): $($row.Status)</span>")
-        }
         if ($Script:LanguageCode -eq 'tr') {
-            $ReportData.Web_Security_Summary = "$($webPortsProbed.Count) web servisi incelendi; $dangerCount kritik ve $warnCount uyarı bulgusu."
+            $webSecSummaryText = "$($webPortsProbed.Count) web servisi incelendi; $dangerCount kritik ve $warnCount uyarı bulgusu."
         } else {
-            $ReportData.Web_Security_Summary = "$($webPortsProbed.Count) web service(s) analyzed; $dangerCount critical and $warnCount warning finding(s)."
+            $webSecSummaryText = "$($webPortsProbed.Count) web service(s) analyzed; $dangerCount critical and $warnCount warning finding(s)."
         }
-        $ReportData.Web_Security = $webSecBadges -join ' '
     }
 
     $solutionText = @{}
@@ -2773,6 +3008,14 @@ if ($dnsOk -and $ScanLevel -eq 'WebSec') {
         $solutionText['Cookie Flags'] = 'Çerezlerde Secure/HttpOnly/SameSite bayrakları eksik; XSS üzerinden oturum çalma riski. Çerezler Secure, HttpOnly ve SameSite=Lax/Strict ile işaretlenmelidir.'
         $solutionText['HTTP to HTTPS'] = 'HTTP/80 trafiği HTTPS uç noktasına yönlendirmiyor; veriler şifrelemesiz ve müdahaleye açık. 301 kalıcı yönlendirme ve HSTS yapılandırılmalıdır.'
         $solutionText['Security Header'] = 'Güvenlik başlığı zayıf veya eksik. HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy ve Permissions-Policy eklenmelidir.'
+        $solutionText['HTTP Flood'] = 'HTTP Flood saldırılarına karşı WAF/CDN ve istek hız sınırlama (rate limiting) yapılandırılmalı; aynı IP ve kullanıcıdan gelen aşırı GET/POST istekleri engellenmelidir.'
+        $solutionText['Slowloris'] = 'Yavaş istek (Slowloris) saldırılarına karşı sunucu bağlantı ve istek tamamlama süre limitleri kısa tutulmalı; boş ve yarım HTTP başlıkları bekleyen bağlantılar zaman aşımına uğratılmalıdır.'
+        $solutionText['SQL Injection'] = 'Kullanıcı girdisi parametreli sorgularla (prepared statement) ve giriş doğrulamasıyla arındırılmalı; veritabanı hata mesajları son kullanıcıya gösterilmemelidir.'
+        $solutionText['XSS'] = 'Kullanıcı girdisi çıktı sırasında bağlama uygun kodlanmalı (output encoding); CSP başlığı ve HttpOnly çerezler eklenmelidir.'
+        $solutionText['HTTP Host Header'] = 'Sunucu yalnızca bilinen ana bilgisayar adlarını kabul etmeli; rastgele Host başlıkları 400/403 ile reddedilmeli, mutlak URL kullanımına dayalı cache/şifre sıfırlama akışları gözden geçirilmelidir.'
+        $solutionText['CRLF Injection'] = 'İstek parametrelerindeki CR/LF karakterleri nötrleştirilmeli; HTTP başlık değerlerinde satır sonu karakterlerine izin verilmemeli ve istek normalizasyonu yapılmalıdır.'
+        $solutionText['CSRF'] = 'Durum değiştiren (POST) formlara CSRF token eklenmeli; çerezler SameSite=Lax/Strict ile işaretlenmeli ve Origin/Referer doğrulaması yapılmalıdır.'
+        $solutionText['Man-in-the-Middle'] = 'Trafik HTTPS ile şifrelenmeli ve HSTS (Strict-Transport-Security) eklenmeli; HTTP trafiği 301 ile HTTPS üzerinden kalıcı olarak yönlendirilmelidir.'
     } else {
         $solutionText['TRACE Method'] = 'The TRACE method is enabled, creating a Cross-Site Tracing (XST) risk. Disable TRACE on the server (IIS: block TRACE in <verbs>; Apache: TraceEnable Off; Nginx: reject TRACE requests).'
         $solutionText['PUT'] = 'The PUT method is allowed, risking unauthorized content modification. Allow only the required methods (GET/HEAD/POST/OPTIONS).'
@@ -2784,6 +3027,14 @@ if ($dnsOk -and $ScanLevel -eq 'WebSec') {
         $solutionText['Cookie Flags'] = 'Cookies are missing Secure/HttpOnly/SameSite flags, risking session theft via XSS. Mark cookies Secure, HttpOnly, and SameSite=Lax/Strict.'
         $solutionText['HTTP to HTTPS'] = 'HTTP/80 does not redirect to HTTPS; data is unencrypted and interceptable. Configure a permanent 301 redirect and HSTS.'
         $solutionText['Security Header'] = 'A security header is weak or missing. Add HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, and Permissions-Policy.'
+        $solutionText['HTTP Flood'] = 'Configure a WAF/CDN and request rate limiting against HTTP Flood attacks; block excessive GET/POST requests from the same IP or user.'
+        $solutionText['Slowloris'] = 'Keep server connection and request-completion time limits short against Slowloris; time out connections that wait on empty or partial HTTP headers.'
+        $solutionText['SQL Injection'] = 'Sanitize user input with parameterized queries (prepared statements) and input validation; never expose database error messages to end users.'
+        $solutionText['XSS'] = 'Encode user input on output in context; add a Content-Security-Policy header and HttpOnly cookies.'
+        $solutionText['HTTP Host Header'] = 'Accept only known hostnames; reject arbitrary Host headers with 400/403 and review cache/password-reset flows that rely on absolute URLs.'
+        $solutionText['CRLF Injection'] = 'Neutralize CR/LF characters in request parameters; forbid line terminators in HTTP header values and normalize requests.'
+        $solutionText['CSRF'] = 'Add CSRF tokens to state-changing (POST) forms; mark cookies SameSite=Lax/Strict and validate Origin/Referer.'
+        $solutionText['Man-in-the-Middle'] = 'Encrypt traffic with HTTPS and add HSTS (Strict-Transport-Security); permanently redirect HTTP traffic to HTTPS with a 301.'
     }
     $headerSolutionMap = @{
         'Strict-Transport-Security' = 'Security Header'
@@ -2801,7 +3052,7 @@ if ($dnsOk -and $ScanLevel -eq 'WebSec') {
         if ($webSecAdvised.ContainsKey($noteKey)) { continue }
         $webSecAdvised[$noteKey] = $true
         $severityPrefix = if ($row.Status -in @('Danger','Fail')) { '[!]' } else { '[i]' }
-        $AdvisorNotes.Add("$severityPrefix Port $($row.Port): $($solutionText[$solutionKey])")
+        $webSecAdvices.Add("$severityPrefix Port $($row.Port): $($solutionText[$solutionKey])")
     }
 }
 
@@ -2962,8 +3213,7 @@ if($ExportHtmlPath){
         HTTPS_Cert_SAN='HTTPS Sertifika SAN Alanları'; HTTPS_Cert_SAN_Match='SAN Hostname Eşleşmesi'; HTTPS_Cert_Chain='Sertifika Zinciri Geçerliliği'; HTTPS_Cert_Chain_Status='Sertifika Zinciri Durumları'; HTTPS_Cert_Revocation='İptal (Revocation) Durumu'; HTTPS_Cert_Signature='Sertifika İmza Algoritması'; HTTPS_Cert_Valid='Sertifika Geçerlilik Penceresi';
         Wifi_Ssid='Wi-Fi Ağ Adı (SSID)'; Wifi_Signal_Percent='Wi-Fi Sinyal Gücü'; Wifi_Channel='Wi-Fi Kanalı'; Wifi_Radio_Type='Wi-Fi Radyo Tipi'; Wifi_Rx_Mbps='Wi-Fi Alış (RX) Hızı'; Wifi_Tx_Mbps='Wi-Fi Gönderim (TX) Hızı';
         Adapter_Status='Ağ Adaptörü Durumu'; Adapter_Link_Speed='Adaptör Bağlantı Hızı'; Adapter_Media='Adaptör Medya Tipi'; Adapter_Packet_Errors='Adaptör Paket Hataları';
-        Port_List='Taranan Portlar';
-        Web_Security_Summary='Web Saldırı Yüzeyi Özeti'; Web_Security='Web Saldırı Yüzeyi Bulguları'
+        Port_List='Taranan Portlar'
     }
     $rows = New-Object Text.StringBuilder
     foreach ($x in $ReportData.GetEnumerator()) {
@@ -2984,14 +3234,14 @@ if($ExportHtmlPath){
         }
 
         # Port_Matrix intentionally contains trusted badge HTML generated by this script.
-        if ($x.Key -in @('Port_Matrix','UDP_Port_Matrix','Security_Headers','Web_Security')) {
+        if ($x.Key -in @('Port_Matrix','UDP_Port_Matrix','Security_Headers')) {
             $value = ConvertTo-LocalizedReportValue $rawValue
         } else {
             $localizedValue = ConvertTo-LocalizedReportValue $rawValue
             $value = ConvertTo-HtmlSafe $localizedValue
         }
 
-        $wideClass = if ($x.Key -in @('Port_Matrix','UDP_Port_Matrix','Security_Headers','Web_Security')) { ' metric-item-wide' } else { '' }
+        $wideClass = if ($x.Key -in @('Port_Matrix','UDP_Port_Matrix','Security_Headers')) { ' metric-item-wide' } else { '' }
         [void]$rows.Append("<div class='metric-item$wideClass'><div class='metric-label'>$(ConvertTo-HtmlSafe $title)</div><div class='metric-value'>$value</div></div>`n")
     }
     $route = New-Object Text.StringBuilder
@@ -3021,6 +3271,42 @@ if($ExportHtmlPath){
         $lossHeader = ConvertTo-LocalizedText 'Kayıp'
         $statusHeader = ConvertTo-LocalizedText 'Durum'
         $routeSection = "<h3>$routeTitle</h3><table><thead><tr><th>Hop</th><th>IP</th><th>Min</th><th>Max</th><th>$avgHeader</th><th>$medianHeader</th><th>p95</th><th>Jitter</th><th>Peak</th><th>StdDev</th><th>$lossHeader</th><th>$statusHeader</th></tr></thead><tbody>$($route.ToString())</tbody></table>"
+    }
+    $webSecSection = ''
+    if ($ScanLevel -eq 'WebSec' -and $webSecRows.Count -gt 0) {
+        $webSecSectionTitle = if ($Script:LanguageCode -eq 'tr') { 'Web Saldırı Yüzeyi Analizi ve Çözüm Önerileri' } else { 'Web Attack-Surface Analysis and Solution Advice' }
+        $portHeader = ConvertTo-LocalizedText 'Port'
+        $checkHeader = ConvertTo-LocalizedText 'Denetim'
+        $webSecStatusHeader = ConvertTo-LocalizedText 'Durum'
+        $detailHeader = ConvertTo-LocalizedText 'Detay'
+        $webSecTableRows = New-Object Text.StringBuilder
+        foreach ($row in $webSecRows) {
+            $rowCssClass = switch ($row.Status) {
+                'Pass'   { 'success' }
+                'Warn'   { 'warning' }
+                'Danger' { 'danger' }
+                'Fail'   { 'failed' }
+                default  { '' }
+            }
+            $rowBadgeClass = switch ($row.Status) {
+                'Pass'   { 'badge-open' }
+                'Warn'   { 'badge-warning' }
+                'Danger' { 'badge-closed' }
+                'Fail'   { 'badge-closed' }
+                default  { 'badge-drop' }
+            }
+            [void]$webSecTableRows.Append("<tr class='$rowCssClass'><td>$($row.Port)</td><td>$(ConvertTo-HtmlSafe ([string]$row.Check))</td><td><span class='badge $rowBadgeClass'>$(ConvertTo-HtmlSafe ([string]$row.Status))</span></td><td>$(ConvertTo-HtmlSafe ([string]$row.Detail))</td></tr>`n")
+        }
+        $webSecAdviceItems = New-Object Text.StringBuilder
+        foreach ($advice in $webSecAdvices) {
+            [void]$webSecAdviceItems.Append("<div class='advisor-item'>$(ConvertTo-HtmlSafe $advice)</div>")
+        }
+        if ($webSecAdviceItems.Length -eq 0) {
+            [void]$webSecAdviceItems.Append("<div class='advisor-item'>$(ConvertTo-LocalizedText 'Ek uyarı yok.')</div>")
+        }
+        $webSecAdviceTitle = ConvertTo-LocalizedText 'Çözüm Önerileri'
+        $webSecSummaryHtml = ConvertTo-HtmlSafe $webSecSummaryText
+        $webSecSection = "<section class='websec-section'><h3>$webSecSectionTitle</h3><div class='websec-summary'>$webSecSummaryHtml</div><table><thead><tr><th>$portHeader</th><th>$checkHeader</th><th>$webSecStatusHeader</th><th>$detailHeader</th></tr></thead><tbody>$($webSecTableRows.ToString())</tbody></table><div class='advisor'><h3>$webSecAdviceTitle</h3>$($webSecAdviceItems.ToString())</div></section>"
     }
     $notes = New-Object Text.StringBuilder
     foreach ($n in $AdvisorNotes) {
@@ -3183,7 +3469,7 @@ if($ExportHtmlPath){
 </footer>
 "@
     $html=@"
-<!doctype html><html lang='$htmlLanguage'><head><meta charset='utf-8'><title>$htmlTitle</title><style>body{font-family:Segoe UI,Arial;background:#f0f2f5;padding:25px;color:#333}.container{max-width:1200px;margin:auto;background:#fff;padding:30px;border-radius:10px;box-shadow:0 4px 20px #0001}h2{color:#005a9e;border-bottom:2px solid #005a9e;padding-bottom:10px}.subtitle{color:#5f6368;margin:-2px 0 18px 0;font-size:14px}table{border-collapse:collapse;width:100%;margin-top:12px;font-size:14px}th,td{padding:10px 14px;border:1px solid #e1e4e8;text-align:left}th{background:#0078d4;color:#fff}.analysis{background:#ebf8ff;border-left:5px solid #0078d4;padding:18px}.advisor{background:#fff8e1;border-left:5px solid #ffc107;padding:15px;margin-top:15px}.advisor-item{margin:6px 0}.metric-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:12px}.metric-item{background:#f8fafc;border:1px solid #e1e4e8;border-radius:8px;padding:10px 14px}.metric-item-wide{grid-column:1/-1}.metric-label{font-size:11px;font-weight:700;color:#5f6368;text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px}.metric-value{font-size:13px;color:#1a2733;word-break:break-word}.badge{padding:4px 9px;border-radius:4px;font-size:12px;font-weight:bold;display:inline-block}.badge-open{background:#d4edda;color:#155724}.badge-closed{background:#f8d7da;color:#721c24}.badge-drop{background:#e2e3e5;color:#383d41}.badge-warning{background:#fff3cd;color:#856404;border:1px solid #ffeeba}.success{background:#e6f4ea}.warning{background:#fef7e0}.danger{background:#fce8e6}.failed{background:#f1f3f4;color:#666}.report-footer{margin-top:28px;padding-top:18px;border-top:1px solid #dfe3e8;color:#5f6368;font-size:13px;line-height:1.6;text-align:center}.report-footer a{color:#0078d4;text-decoration:none;font-weight:600}.report-footer a:hover{text-decoration:underline}.footer-brand{color:#005a9e;font-weight:700}.infographic-section{margin-top:28px}.dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:14px 0 20px}.kpi-card{background:linear-gradient(145deg,#ffffff,#f6f9fc);border:1px solid #dce6f0;border-radius:10px;padding:15px;box-shadow:0 2px 8px #0000000d}.kpi-label{font-size:12px;color:#667085;text-transform:uppercase;letter-spacing:.35px}.kpi-value{font-size:25px;font-weight:700;color:#12344d;margin-top:6px}.kpi-accent{height:4px;border-radius:4px;background:#0078d4;margin-top:12px}.chart-panel{background:#fff;border:1px solid #dce6f0;border-radius:10px;padding:16px;margin:14px 0;box-shadow:0 2px 8px #0000000d}.chart-title{font-size:16px;font-weight:700;color:#12344d;margin-bottom:14px}.bar-row{display:grid;grid-template-columns:minmax(92px,145px) 1fr minmax(68px,95px);gap:10px;align-items:center;margin:9px 0}.bar-label{font-size:12px;color:#475467;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar-track{height:13px;background:#edf2f7;border-radius:7px;overflow:hidden}.bar-fill{height:100%;min-width:2px;border-radius:7px;background:linear-gradient(90deg,#0078d4,#35a7ff)}.bar-fill-jitter{background:linear-gradient(90deg,#ffb900,#f7630c)}.bar-value{font-size:12px;font-weight:600;color:#344054;text-align:right}.donut-wrap{display:flex;gap:22px;align-items:center;flex-wrap:wrap}.donut{width:132px;height:132px;border-radius:50%;display:grid;place-items:center;position:relative}.donut:after{content:'';width:82px;height:82px;background:#fff;border-radius:50%;position:absolute}.donut-center{position:relative;z-index:1;text-align:center;font-weight:700;color:#12344d}.legend-item{display:flex;align-items:center;gap:8px;margin:8px 0;color:#475467;font-size:13px}.legend-dot{width:11px;height:11px;border-radius:50%;display:inline-block}.legend-success{background:#107c10}.legend-failed{background:#d13438}.chart-note{color:#667085;font-size:13px;font-style:italic}.privacy-details{margin:16px auto 0;max-width:920px;text-align:left;border:1px solid #dfe3e8;border-radius:8px;background:#f8fafc}.privacy-details summary{cursor:pointer;padding:10px 13px;color:#475467;font-weight:600;list-style-position:inside}.privacy-details[open] summary{border-bottom:1px solid #dfe3e8}.privacy-content{padding:12px 15px;color:#475467;font-size:12px;line-height:1.65}.privacy-content p{margin:7px 0}.privacy-content strong{color:#12344d}.privacy-links{margin-top:10px}.privacy-links a{margin-right:14px}</style></head><body><div class='container'><h2>$(ConvertTo-LocalizedText 'NetDiag Ağ, Sistem ve Uygulama Teşhis Raporu')</h2><div class='subtitle'>$(ConvertTo-LocalizedText 'Hedef'): $(ConvertTo-HtmlSafe $Target) | Port: $Port | $(ConvertTo-LocalizedText 'Tarama'): $(ConvertTo-HtmlSafe $ScanLevel)</div><div class='analysis'>$localizedAnalysis</div><div class='advisor'><h3>$(ConvertTo-LocalizedText 'Önerilen Aksiyonlar ve Sistem Uyarıları')</h3>$notes</div><h3>$(ConvertTo-LocalizedText 'Genel Sistem, Ağ ve Uygulama Metrikleri')</h3><div class='metric-grid'>$rows</div>$infographicHtml$routeSection$footerHtml</div></body></html>
+<!doctype html><html lang='$htmlLanguage'><head><meta charset='utf-8'><title>$htmlTitle</title><style>body{font-family:Segoe UI,Arial;background:#f0f2f5;padding:25px;color:#333}.container{max-width:1200px;margin:auto;background:#fff;padding:30px;border-radius:10px;box-shadow:0 4px 20px #0001}h2{color:#005a9e;border-bottom:2px solid #005a9e;padding-bottom:10px}.subtitle{color:#5f6368;margin:-2px 0 18px 0;font-size:14px}table{border-collapse:collapse;width:100%;margin-top:12px;font-size:14px}th,td{padding:10px 14px;border:1px solid #e1e4e8;text-align:left}th{background:#0078d4;color:#fff}.analysis{background:#ebf8ff;border-left:5px solid #0078d4;padding:18px}.advisor{background:#fff8e1;border-left:5px solid #ffc107;padding:15px;margin-top:15px}.advisor-item{margin:6px 0}.websec-section{margin-top:28px}.websec-summary{margin:10px 0 14px 0;padding:12px 16px;background:#f8fafc;border:1px solid #e1e4e8;border-radius:8px;font-size:14px}.metric-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:12px}.metric-item{background:#f8fafc;border:1px solid #e1e4e8;border-radius:8px;padding:10px 14px}.metric-item-wide{grid-column:1/-1}.metric-label{font-size:11px;font-weight:700;color:#5f6368;text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px}.metric-value{font-size:13px;color:#1a2733;word-break:break-word}.badge{padding:4px 9px;border-radius:4px;font-size:12px;font-weight:bold;display:inline-block}.badge-open{background:#d4edda;color:#155724}.badge-closed{background:#f8d7da;color:#721c24}.badge-drop{background:#e2e3e5;color:#383d41}.badge-warning{background:#fff3cd;color:#856404;border:1px solid #ffeeba}.success{background:#e6f4ea}.warning{background:#fef7e0}.danger{background:#fce8e6}.failed{background:#f1f3f4;color:#666}.report-footer{margin-top:28px;padding-top:18px;border-top:1px solid #dfe3e8;color:#5f6368;font-size:13px;line-height:1.6;text-align:center}.report-footer a{color:#0078d4;text-decoration:none;font-weight:600}.report-footer a:hover{text-decoration:underline}.footer-brand{color:#005a9e;font-weight:700}.infographic-section{margin-top:28px}.dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:14px 0 20px}.kpi-card{background:linear-gradient(145deg,#ffffff,#f6f9fc);border:1px solid #dce6f0;border-radius:10px;padding:15px;box-shadow:0 2px 8px #0000000d}.kpi-label{font-size:12px;color:#667085;text-transform:uppercase;letter-spacing:.35px}.kpi-value{font-size:25px;font-weight:700;color:#12344d;margin-top:6px}.kpi-accent{height:4px;border-radius:4px;background:#0078d4;margin-top:12px}.chart-panel{background:#fff;border:1px solid #dce6f0;border-radius:10px;padding:16px;margin:14px 0;box-shadow:0 2px 8px #0000000d}.chart-title{font-size:16px;font-weight:700;color:#12344d;margin-bottom:14px}.bar-row{display:grid;grid-template-columns:minmax(92px,145px) 1fr minmax(68px,95px);gap:10px;align-items:center;margin:9px 0}.bar-label{font-size:12px;color:#475467;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar-track{height:13px;background:#edf2f7;border-radius:7px;overflow:hidden}.bar-fill{height:100%;min-width:2px;border-radius:7px;background:linear-gradient(90deg,#0078d4,#35a7ff)}.bar-fill-jitter{background:linear-gradient(90deg,#ffb900,#f7630c)}.bar-value{font-size:12px;font-weight:600;color:#344054;text-align:right}.donut-wrap{display:flex;gap:22px;align-items:center;flex-wrap:wrap}.donut{width:132px;height:132px;border-radius:50%;display:grid;place-items:center;position:relative}.donut:after{content:'';width:82px;height:82px;background:#fff;border-radius:50%;position:absolute}.donut-center{position:relative;z-index:1;text-align:center;font-weight:700;color:#12344d}.legend-item{display:flex;align-items:center;gap:8px;margin:8px 0;color:#475467;font-size:13px}.legend-dot{width:11px;height:11px;border-radius:50%;display:inline-block}.legend-success{background:#107c10}.legend-failed{background:#d13438}.chart-note{color:#667085;font-size:13px;font-style:italic}.privacy-details{margin:16px auto 0;max-width:920px;text-align:left;border:1px solid #dfe3e8;border-radius:8px;background:#f8fafc}.privacy-details summary{cursor:pointer;padding:10px 13px;color:#475467;font-weight:600;list-style-position:inside}.privacy-details[open] summary{border-bottom:1px solid #dfe3e8}.privacy-content{padding:12px 15px;color:#475467;font-size:12px;line-height:1.65}.privacy-content p{margin:7px 0}.privacy-content strong{color:#12344d}.privacy-links{margin-top:10px}.privacy-links a{margin-right:14px}</style></head><body><div class='container'><h2>$(ConvertTo-LocalizedText 'NetDiag Ağ, Sistem ve Uygulama Teşhis Raporu')</h2><div class='subtitle'>$(ConvertTo-LocalizedText 'Hedef'): $(ConvertTo-HtmlSafe $Target) | Port: $Port | $(ConvertTo-LocalizedText 'Tarama'): $(ConvertTo-HtmlSafe $ScanLevel)</div><div class='analysis'>$localizedAnalysis</div><div class='advisor'><h3>$(ConvertTo-LocalizedText 'Önerilen Aksiyonlar ve Sistem Uyarıları')</h3>$notes</div><h3>$(ConvertTo-LocalizedText 'Genel Sistem, Ağ ve Uygulama Metrikleri')</h3><div class='metric-grid'>$rows</div>$infographicHtml$routeSection$webSecSection$footerHtml</div></body></html>
 "@
     $parent = Split-Path -Path $ExportHtmlPath -Parent
     if ($parent -and (-not (Test-Path -LiteralPath $parent))) {
