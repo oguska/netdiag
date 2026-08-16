@@ -298,6 +298,20 @@ $Script:EnglishTranslations = [ordered]@{
     'Rapor yazılamadı'='Report could not be written'
     'HTTP Yanıt Kodu'='HTTP Status Code'
     'Toplam HTTP Yanıt Süresi'='Total HTTP Response Time'
+    'Desteklenen TLS Sürümleri'='Supported TLS Versions'
+    'Müzakere Edilen TLS Sürümü'='Negotiated TLS Version'
+    'Müzakere Edilen Şifreleme'='Negotiated Cipher Suite'
+    'HTTP Protokolü (ALPN)'='HTTP Protocol (ALPN)'
+    'HTTP/2 Durumu'='HTTP/2 Status'
+    'HTTP/3 (QUIC) Durumu'='HTTP/3 (QUIC) Status'
+    'Güvenlik Başlığı Puanı'='Security Header Score'
+    'Güvenlik Başlığı Denetimi'='Security Header Audit'
+    'Desteklenen TLS sürümü bulunamadı.'='No supported TLS version was found.'
+    'Hiçbiri (TLS handshake başarısız)'='None (TLS handshake failed)'
+    'Eski TLS sürümü kabul edildi; risk oluşturabilir.'='A legacy TLS version is accepted; this may pose a risk.'
+    'Desteklenen:'='Supported:'
+    'Müzakere edilen ALPN:'='Negotiated ALPN:'
+    'TLS ve HTTP protokol denetimi'='TLS and HTTP protocol check'
 }
 
 # ConvertTo-LocalizedText runs once per console status line and once per HTML row.
@@ -1187,6 +1201,243 @@ function Test-UdpService {
     }
 }
 
+function Test-TlsVersions {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][ValidateRange(1,65535)][int]$Port,
+        [ValidateRange(100,30000)][int]$TimeoutMs = 1500
+    )
+    $probes = @(
+        @{ Name='TLS 1.3'; Flag=[System.Security.Authentication.SslProtocols]12288 },
+        @{ Name='TLS 1.2'; Flag=[System.Security.Authentication.SslProtocols]3072 },
+        @{ Name='TLS 1.1'; Flag=[System.Security.Authentication.SslProtocols]768 },
+        @{ Name='TLS 1.0'; Flag=[System.Security.Authentication.SslProtocols]192 }
+    )
+    $accepted = New-Object 'System.Collections.Generic.List[string]'
+    $cipherSuite = 'N/A'
+    foreach ($probe in $probes) {
+        $tcp = $null
+        $ssl = $null
+        $ok = $false
+        try {
+            $tcp = New-Object Net.Sockets.TcpClient
+            $ar = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
+            if (-not $ar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { continue }
+            $tcp.EndConnect($ar)
+            $ssl = New-Object Net.Security.SslStream($tcp.GetStream(), $false, ({$true}))
+            $ssl.ReadTimeout = $TimeoutMs
+            $ssl.WriteTimeout = $TimeoutMs
+            $ssl.AuthenticateAsClient($ComputerName, $null, $probe.Flag, $false)
+            $ok = $true
+            if ($accepted.Count -eq 0) {
+                $suite = $ssl.PSObject.Properties['NegotiatedCipherSuite']
+                if ($null -ne $suite -and [string]$suite.Value) {
+                    $cipherSuite = [string]$suite.Value
+                } else {
+                    $cipherSuite = "Cipher: $($ssl.CipherAlgorithm) ($($ssl.CipherStrength) bit)"
+                }
+            }
+        } catch {}
+        finally {
+            if ($ssl) { $ssl.Dispose() }
+            if ($tcp) { $tcp.Dispose() }
+        }
+        if ($ok) { $accepted.Add($probe.Name) }
+    }
+    return [pscustomobject]@{
+        AcceptedVersions = $accepted.ToArray()
+        BestProtocol = if ($accepted.Count -gt 0) { $accepted[0] } else { 'N/A' }
+        CipherSuite = $cipherSuite
+    }
+}
+
+function Get-NegotiatedAlpn {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][ValidateRange(1,65535)][int]$Port,
+        [ValidateRange(100,30000)][int]$TimeoutMs = 1500
+    )
+    if ('System.Net.Security.SslClientAuthenticationOptions' -as [type]) {
+        $tcp = $null
+        $ssl = $null
+        try {
+            $tcp = New-Object Net.Sockets.TcpClient
+            $ar = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
+            if (-not $ar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { return 'N/A (connect timeout)' }
+            $tcp.EndConnect($ar)
+            $ssl = New-Object Net.Security.SslStream($tcp.GetStream(), $false, ({$true}))
+            $opts = New-Object System.Net.Security.SslClientAuthenticationOptions
+            $opts.TargetHost = $ComputerName
+            $alpnList = New-Object 'System.Collections.Generic.List[System.Net.Security.SslApplicationProtocol]'
+            $alpnList.Add([System.Net.Security.SslApplicationProtocol]::Http2)
+            $alpnList.Add([System.Net.Security.SslApplicationProtocol]::Http11)
+            $opts.ApplicationProtocols = $alpnList
+            $opts.EnabledSslProtocols = (
+                [System.Security.Authentication.SslProtocols]12288 -bor
+                [System.Security.Authentication.SslProtocols]3072
+            )
+            $ssl.AuthenticateAsClient($opts)
+            $negotiated = $ssl.PSObject.Properties['NegotiatedApplicationProtocol']
+            $alpn = if ($null -ne $negotiated -and [string]$negotiated.Value) {
+                [string]$negotiated.Value
+            } else {
+                $null
+            }
+            if ([string]::IsNullOrWhiteSpace($alpn)) { return 'None (ALPN not negotiated)' }
+            return $alpn
+        } catch {
+            return "N/A ($($_.Exception.Message))"
+        }
+        finally {
+            if ($ssl) { $ssl.Dispose() }
+            if ($tcp) { $tcp.Dispose() }
+        }
+    }
+    return 'N/A (ALPN not supported by runtime)'
+}
+
+function Test-HttpVersion3 {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Url,
+        [ValidateRange(1,120)][int]$TimeoutSec = 5
+    )
+    if ($PSVersionTable.PSVersion -lt [Version]'7.2') {
+        return 'N/A (requires PowerShell 7.2+ / .NET 6+)'
+    }
+    $client = $null
+    $response = $null
+    try {
+        $client = New-Object System.Net.Http.HttpClient
+        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+        $request = New-Object System.Net.Http.HttpRequestMessage
+        $request.Method = [System.Net.Http.HttpMethod]::Get
+        $request.RequestUri = [Uri]$Url
+        $request.Version = [Version]::new(3, 0)
+        $request.VersionPolicy = [System.Net.Http.HttpVersionPolicy]::RequestVersionExact
+        $response = $client.SendAsync($request).GetAwaiter().GetResult()
+        $negotiated = [string]$response.Version
+        if ($negotiated -eq '3.0') {
+            return 'Supported (HTTP/3 negotiated over UDP/443)'
+        }
+        return "Not used (server negotiated HTTP/$negotiated)"
+    } catch {
+        $message = $_.Exception.Message
+        if ($message -match '(?i)canceled|timed out|timeout') {
+            return 'Unsupported (no HTTP/3/QUIC response received within the timeout)'
+        }
+        return "Unavailable ($message)"
+    }
+    finally {
+        if ($response) { $response.Dispose() }
+        if ($client) { $client.Dispose() }
+    }
+}
+
+function Test-SecurityHeaderAudit {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Response,
+        [Parameter(Mandatory)][ValidateSet('http','https')][string]$Protocol
+    )
+    $headerMap = @{}
+    try {
+        foreach ($key in $Response.Headers.Keys) {
+            $value = $Response.Headers[$key]
+            if ($value -is [System.Collections.IEnumerable] -and $value -isnot [string]) {
+                $value = @($value) -join ', '
+            }
+            $headerMap[[string]$key] = [string]$value
+        }
+    } catch {}
+
+    $checks = @(
+        @{ Name='Strict-Transport-Security' },
+        @{ Name='Content-Security-Policy' },
+        @{ Name='X-Content-Type-Options' },
+        @{ Name='X-Frame-Options' },
+        @{ Name='Referrer-Policy' },
+        @{ Name='Permissions-Policy' }
+    )
+    $items = New-Object 'System.Collections.Generic.List[object]'
+    $passCount = 0
+    $failCount = 0
+    foreach ($check in $checks) {
+        $found = $null
+        foreach ($k in $headerMap.Keys) {
+            if ($k -ieq $check.Name) { $found = $headerMap[$k]; break }
+        }
+        $status = 'Fail'
+        $detail = 'Missing'
+        if ($null -ne $found) {
+            switch ($check.Name) {
+                'Strict-Transport-Security' {
+                    if ($found -match '(?i)max-age=(\d+)') {
+                        if ([long]$matches[1] -ge 15552000) {
+                            $status = 'Pass'; $detail = "Present, max-age=$($matches[1]) (>= 180 days)"
+                        } else {
+                            $status = 'Warn'; $detail = "Present, max-age=$($matches[1]) (< 180 days)"
+                        }
+                    } else {
+                        $status = 'Warn'; $detail = 'Present without a valid max-age'
+                    }
+                }
+                'Content-Security-Policy' {
+                    if (-not [string]::IsNullOrWhiteSpace($found)) {
+                        $status = 'Pass'; $detail = 'Present'
+                    } else {
+                        $status = 'Fail'; $detail = 'Empty'
+                    }
+                }
+                'X-Content-Type-Options' {
+                    if ($found -match '(?i)nosniff') { $status = 'Pass'; $detail = 'nosniff' }
+                    else { $status = 'Warn'; $detail = $found }
+                }
+                'X-Frame-Options' {
+                    if ($found -match '(?i)(DENY|SAMEORIGIN)') { $status = 'Pass'; $detail = $found }
+                    else { $status = 'Warn'; $detail = $found }
+                }
+                'Referrer-Policy' {
+                    if (-not [string]::IsNullOrWhiteSpace($found)) { $status = 'Pass'; $detail = $found }
+                    else { $status = 'Warn'; $detail = 'Empty' }
+                }
+                'Permissions-Policy' {
+                    if (-not [string]::IsNullOrWhiteSpace($found)) { $status = 'Pass'; $detail = $found }
+                    else { $status = 'Warn'; $detail = 'Empty' }
+                }
+            }
+        }
+        if ($status -eq 'Pass') { $passCount++ }
+        if ($status -eq 'Fail') { $failCount++ }
+        $items.Add([pscustomobject]@{ Name = $check.Name; Status = $status; Detail = $detail })
+    }
+
+    $serverValue = $null
+    foreach ($k in $headerMap.Keys) { if ($k -ieq 'Server') { $serverValue = $headerMap[$k]; break } }
+    $badges = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($item in $items) {
+        $cssClass = switch ($item.Status) {
+            'Pass' { 'badge-open' }
+            'Warn' { 'badge-warning' }
+            default { 'badge-closed' }
+        }
+        $badges.Add("<span class='badge $cssClass'>$($item.Name): $($item.Status)</span>")
+    }
+    if ($serverValue) {
+        $badges.Add("<span class='badge badge-drop'>Server: $serverValue</span>")
+    }
+
+    return [pscustomobject]@{
+        ScoreText = "$passCount/$($checks.Count) Pass"
+        BadgesHtml = ($badges -join ' ')
+        Items = $items.ToArray()
+        ServerValue = $serverValue
+        HasFailures = ($failCount -gt 0)
+    }
+}
+
 function Test-ScriptUpdate {
     Write-Host "[*] $(ConvertTo-LocalizedText 'Güncellemeler kontrol ediliyor')..." -ForegroundColor Gray
     try {
@@ -1744,11 +1995,50 @@ if($JMeterCsvPath-and(Test-Path $JMeterCsvPath)){try{$csv=@(Import-Csv $JMeterCs
 if($dnsOk -and $ScanLevel -eq 'Deep' -and ($Port -in @(80,443,8080,8443))){
     Write-LogHeader '6. WEB, SSL VE HTTP ANALİZİ'
     $protocol=if($Port -in @(443,8443)){'https'}else{'http'};$url="${protocol}://${Target}:${Port}/"
+    $ReportData.TLS_Supported_Versions='N/A';$ReportData.TLS_Negotiated_Protocol='N/A';$ReportData.TLS_Negotiated_Cipher='N/A';$ReportData.HTTP_Version_ALPN='N/A';$ReportData.HTTP3_QUIC_Status='N/A';$ReportData.Security_Header_Score='N/A';$ReportData.Security_Headers='N/A'
     if($protocol -eq 'https' -and $targetTcpReachable){
         $tc=$null;$ss=$null
         try{$tc=New-Object Net.Sockets.TcpClient;$ar=$tc.BeginConnect($targetIP,$Port,$null,$null);if(-not $ar.AsyncWaitHandle.WaitOne($TcpTimeoutMs,$false)){throw 'SSL TCP timeout'};$tc.EndConnect($ar);$ss=New-Object Net.Security.SslStream($tc.GetStream(),$false,({$true}));$ss.ReadTimeout=$HttpTimeoutSec*1000;$ss.WriteTimeout=$HttpTimeoutSec*1000;$ss.AuthenticateAsClient($Target);$cert=New-Object Security.Cryptography.X509Certificates.X509Certificate2 $ss.RemoteCertificate;$days=[Math]::Floor(($cert.NotAfter-(Get-Date)).TotalDays);$ReportData.SSL_Subject=$cert.Subject;$ReportData.SSL_Issuer=$cert.Issuer;$ReportData.SSL_Days_Left="$days Gün";Write-Status SSL "$days gün kaldı" $(if($days-lt30){'Yellow'}else{'Green'})}catch{Write-Status SSL $_.Exception.Message Red}finally{if($ss){$ss.Dispose()};if($tc){$tc.Dispose()}}
+
+        $tlsProbe=Test-TlsVersions -ComputerName $targetIP -Port $Port -TimeoutMs $TcpTimeoutMs
+        if($tlsProbe.AcceptedVersions.Count -gt 0){
+            $ReportData.TLS_Supported_Versions=($tlsProbe.AcceptedVersions -join ', ')
+            $ReportData.TLS_Negotiated_Protocol=$tlsProbe.BestProtocol
+            $ReportData.TLS_Negotiated_Cipher=$tlsProbe.CipherSuite
+            Write-Status TLS "$(ConvertTo-LocalizedText 'Desteklenen:') $($tlsProbe.AcceptedVersions -join ', ') | $($tlsProbe.CipherSuite)" Green
+            if($tlsProbe.AcceptedVersions -contains 'TLS 1.0' -or $tlsProbe.AcceptedVersions -contains 'TLS 1.1'){
+                Write-Status TLS 'Eski TLS sürümü kabul edildi; risk oluşturabilir.' Yellow
+                if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] TLS 1.0 veya TLS 1.1 kabul edildi; bu sürümler modern güvenlik standartlarını karşılamaz. TLS 1.2/1.3 yapılandırması önerilir.')}else{$AdvisorNotes.Add('[!] TLS 1.0 or TLS 1.1 is accepted; these versions do not meet modern security standards. TLS 1.2/1.3 configuration is recommended.')}
+            }
+        } else {
+            $ReportData.TLS_Supported_Versions='Hiçbiri (TLS handshake başarısız)'
+            Write-Status TLS 'Desteklenen TLS sürümü bulunamadı.' Yellow
+        }
+
+        $alpn=Get-NegotiatedAlpn -ComputerName $targetIP -Port $Port -TimeoutMs $TcpTimeoutMs
+        $ReportData.HTTP_Version_ALPN=$alpn
+        Write-Status ALPN "$(ConvertTo-LocalizedText 'Müzakere edilen ALPN:') $alpn" $(if($alpn -eq 'h2'){'Green'}else{'Yellow'})
+        if($alpn -eq 'h2'){$ReportData.HTTP2_Status='Supported (HTTP/2 negotiated via ALPN)'}else{$ReportData.HTTP2_Status=$alpn}
+
+        $http3=Test-HttpVersion3 -Url $url -TimeoutSec $HttpTimeoutSec
+        $ReportData.HTTP3_QUIC_Status=$http3
+        Write-Status HTTP3 $http3 $(if($http3 -like 'Supported*'){'Green'}else{'Yellow'})
+        if($http3 -like 'Supported*'){if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[i] Hedef HTTP/3 (QUIC) destekliyor; UDP/443 üzerinden yük testi için ayrıca değerlendirilebilir.')}else{$AdvisorNotes.Add('[i] The target supports HTTP/3 (QUIC); it may be considered separately for load testing over UDP/443.')}}
     }
-    try{$old=[Net.ServicePointManager]::ServerCertificateValidationCallback;[Net.ServicePointManager]::ServerCertificateValidationCallback={$true};$sw=[Diagnostics.Stopwatch]::StartNew();$wp=@{Uri=$url;Method='Get';TimeoutSec=$HttpTimeoutSec;ErrorAction='Stop';UseBasicParsing=$true};$wr=Invoke-WebRequest @wp;$sw.Stop();$ReportData.HTTP_Code=$wr.StatusCode;$ReportData.HTTP_Total_Time="$($sw.ElapsedMilliseconds) ms";Write-Status HTTP "Status $($wr.StatusCode), toplam $($sw.ElapsedMilliseconds) ms" Green}catch{Write-Status HTTP $_.Exception.Message Red}finally{[Net.ServicePointManager]::ServerCertificateValidationCallback=$old}
+    $secAudit=$null
+    try{$old=[Net.ServicePointManager]::ServerCertificateValidationCallback;[Net.ServicePointManager]::ServerCertificateValidationCallback={$true};$sw=[Diagnostics.Stopwatch]::StartNew();$wp=@{Uri=$url;Method='Get';TimeoutSec=$HttpTimeoutSec;ErrorAction='Stop';UseBasicParsing=$true};$wr=Invoke-WebRequest @wp;$sw.Stop();$ReportData.HTTP_Code=$wr.StatusCode;$ReportData.HTTP_Total_Time="$($sw.ElapsedMilliseconds) ms";Write-Status HTTP "Status $($wr.StatusCode), toplam $($sw.ElapsedMilliseconds) ms" Green
+        if($wr.Headers){
+            $secAudit=Test-SecurityHeaderAudit -Response $wr -Protocol $protocol
+            $ReportData.Security_Header_Score=$secAudit.ScoreText
+            $ReportData.Security_Headers=$secAudit.BadgesHtml
+            Write-Status SEC "$(ConvertTo-LocalizedText 'Güvenlik Başlığı Puanı'): $($secAudit.ScoreText)" $(if($secAudit.HasFailures){'Red'}else{'Green'})
+            foreach($secItem in $secAudit.Items){
+                $secColor=switch($secItem.Status){'Pass'{'Green'};'Warn'{'Yellow'};default{'Red'}}
+                Write-Status "SEC-$($secItem.Name)" "$($secItem.Status): $($secItem.Detail)" $secColor
+            }
+            if($secAudit.HasFailures){if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] Bazı güvenlik başlıkları eksik; gizlilik, bütünlük ve tarayıcı güvenliği risklerini azaltmak için HTTP yanıt başlıkları güçlendirilmelidir.')}else{$AdvisorNotes.Add('[!] Some security headers are missing; HTTP response headers should be hardened to reduce privacy, integrity, and browser security risks.')}}
+        }
+    }catch{Write-Status HTTP $_.Exception.Message Red}finally{[Net.ServicePointManager]::ServerCertificateValidationCallback=$old}
 }
 
 Write-LogHeader '7. KÖK NEDEN VE ÇAPRAZ KORELASYON'
@@ -1901,7 +2191,8 @@ if($ExportHtmlPath){
         SSL_Days_Left='SSL Kalan Geçerlilik Süresi'; HTTP_Code='HTTP Yanıt Kodu';
         HTTP_Total_Time='Toplam HTTP Yanıt Süresi'; ICMP_Sent='Gönderilen ICMP Paketi'; ICMP_Received='Yanıtlanan ICMP Paketi'; ICMP_Loss='Hedef ICMP Yanıt Kaybı';
         Unloaded_Min_RTT='Hedef Minimum RTT'; Unloaded_Median_RTT='Hedef Medyan RTT'; Unloaded_p95_RTT='Hedef p95 RTT'; Unloaded_Max_RTT='Hedef Maksimum RTT'; Destination_RTT_StdDev='Hedef RTT Standart Sapması'; Destination_Mean_Jitter='Hedef Ortalama Jitter'; Destination_Peak_Jitter='Hedef Peak Jitter'; Destination_Smoothed_Variation='Hedef Yumuşatılmış RTT Değişimi';
-        HTTPS_Certificate_Status='HTTPS Sertifika Durumu'; HTTPS_Certificate_NotBefore='HTTPS Sertifika Başlangıcı'; HTTPS_Certificate_NotAfter='HTTPS Sertifika Bitişi'; Effective_Load_Test_URL='Etkin Yük Testi URL''si'; Load_Test_Status='HTTP Yük Testi Durumu'; JMeter_Engine='HTTP Yük Test Motoru'; JMeter_Method='HTTP Metodu'; JMeter_Peak_Concurrency='Ölçülen En Yüksek Eşzamanlı İstek'; JMeter_RampUp='Ramp-up Süresi'; JMeter_Warmup_Requests='Warm-up İstek Sayısı'; JMeter_Successful_Requests='Başarılı HTTP İsteği'; JMeter_Failed_Requests='Başarısız HTTP İsteği'; JMeter_Test_Duration='Toplam Yük Testi Süresi'; JMeter_Avg_Header_Time='Ortalama Header / TTFB Süresi'; JMeter_p95_Header_Time='p95 Header / TTFB Süresi'; JMeter_Avg_Download_Time='Ortalama Response İndirme Süresi'; JMeter_Avg_Elapsed='Ortalama Toplam HTTP Süresi'; JMeter_Elapsed_StdDev='HTTP Süre Standart Sapması'; JMeter_p50_Elapsed='p50 Toplam HTTP Süresi'; JMeter_p75_Elapsed='p75 Toplam HTTP Süresi'; JMeter_p90_Elapsed='p90 Toplam HTTP Süresi'; JMeter_p95_Elapsed='p95 Toplam HTTP Süresi'; JMeter_p99_Elapsed='p99 Toplam HTTP Süresi'; JMeter_Status_Distribution='HTTP Durum Kodu Dağılımı'; JMeter_Error_Distribution='HTTP Hata Tipi Dağılımı'; JMeter_Total_Data='Toplam Alınan Response Verisi'; JMeter_Average_Response_Size='Ortalama Response Boyutu'; JMeter_Download_Throughput='Response Veri Aktarım Hızı'
+        HTTPS_Certificate_Status='HTTPS Sertifika Durumu'; HTTPS_Certificate_NotBefore='HTTPS Sertifika Başlangıcı'; HTTPS_Certificate_NotAfter='HTTPS Sertifika Bitişi'; Effective_Load_Test_URL='Etkin Yük Testi URL''si'; Load_Test_Status='HTTP Yük Testi Durumu'; JMeter_Engine='HTTP Yük Test Motoru'; JMeter_Method='HTTP Metodu'; JMeter_Peak_Concurrency='Ölçülen En Yüksek Eşzamanlı İstek'; JMeter_RampUp='Ramp-up Süresi'; JMeter_Warmup_Requests='Warm-up İstek Sayısı'; JMeter_Successful_Requests='Başarılı HTTP İsteği'; JMeter_Failed_Requests='Başarısız HTTP İsteği'; JMeter_Test_Duration='Toplam Yük Testi Süresi'; JMeter_Avg_Header_Time='Ortalama Header / TTFB Süresi'; JMeter_p95_Header_Time='p95 Header / TTFB Süresi'; JMeter_Avg_Download_Time='Ortalama Response İndirme Süresi'; JMeter_Avg_Elapsed='Ortalama Toplam HTTP Süresi'; JMeter_Elapsed_StdDev='HTTP Süre Standart Sapması'; JMeter_p50_Elapsed='p50 Toplam HTTP Süresi'; JMeter_p75_Elapsed='p75 Toplam HTTP Süresi'; JMeter_p90_Elapsed='p90 Toplam HTTP Süresi'; JMeter_p95_Elapsed='p95 Toplam HTTP Süresi'; JMeter_p99_Elapsed='p99 Toplam HTTP Süresi'; JMeter_Status_Distribution='HTTP Durum Kodu Dağılımı'; JMeter_Error_Distribution='HTTP Hata Tipi Dağılımı'; JMeter_Total_Data='Toplam Alınan Response Verisi'; JMeter_Average_Response_Size='Ortalama Response Boyutu'; JMeter_Download_Throughput='Response Veri Aktarım Hızı';
+        TLS_Supported_Versions='Desteklenen TLS Sürümleri'; TLS_Negotiated_Protocol='Müzakere Edilen TLS Sürümü'; TLS_Negotiated_Cipher='Müzakere Edilen Şifreleme'; HTTP_Version_ALPN='HTTP Protokolü (ALPN)'; HTTP2_Status='HTTP/2 Durumu'; HTTP3_QUIC_Status='HTTP/3 (QUIC) Durumu'; Security_Header_Score='Güvenlik Başlığı Puanı'; Security_Headers='Güvenlik Başlığı Denetimi'
     }
     $rows = New-Object Text.StringBuilder
     foreach ($x in $ReportData.GetEnumerator()) {
@@ -1922,7 +2213,7 @@ if($ExportHtmlPath){
         }
 
         # Port_Matrix intentionally contains trusted badge HTML generated by this script.
-        if ($x.Key -in @('Port_Matrix','UDP_Port_Matrix')) {
+        if ($x.Key -in @('Port_Matrix','UDP_Port_Matrix','Security_Headers')) {
             $value = ConvertTo-LocalizedReportValue $rawValue
         } else {
             $localizedValue = ConvertTo-LocalizedReportValue $rawValue
