@@ -232,7 +232,7 @@ $Script:EnglishTranslations = [ordered]@{
     'TTFB değişkenliği yüksek'='High TTFB variability'
     'Kuyruk latency sorunu'='Tail latency problem'
     'Zamanlama metrikleri sağlıklı görünüyor'='Timing metrics appear healthy'
-    'Checking DNS exposure records (MX, SPF, DMARC, DKIM, CAA)...'='DNS sızıntı kayıtları kontrol ediliyor (MX, SPF, DMARC, DKIM, CAA)...'
+    'DNS sızıntı kayıtları kontrol ediliyor (MX, SPF, DMARC, DKIM, CAA)...'='Checking DNS exposure records (MX, SPF, DMARC, DKIM, CAA)...'
     'MX records point to external mail providers'='MX kayıtları harici posta sağlayıcılarını işaret ediyor'
     'SPF policy'='SPF politikası'
     'DMARC policy'='DMARC politikası'
@@ -2794,20 +2794,20 @@ try {
 
     # DNS exposure checks: MX, TXT (SPF/DMARC/DKIM), CAA
     if ($Target -ne $targetIP -and $ScanLevel -in @('Medium','Deep','JMeter','WebSec')) {
-        Write-Status DNS 'Checking DNS exposure records (MX, SPF, DMARC, DKIM, CAA)...' Cyan
+        Write-Status DNS 'DNS sızıntı kayıtları kontrol ediliyor (MX, SPF, DMARC, DKIM, CAA)...' Cyan
         $dnsExposure = @()
 
         # MX records
         try {
             $mxRecords = @(Resolve-DnsName $Target -Type MX -ErrorAction SilentlyContinue | Sort-Object Preference | Select-Object Preference, NameExchange -Unique)
             if ($mxRecords.Count -gt 0) {
-                $mxList = $mxRecords | ForEach-Object { "Priority $($_.Preference): $($_.NameExchange)" } -join '; '
+                $mxList = [string]::Join('; ', @($mxRecords | ForEach-Object { "Priority $($_.Preference): $($_.NameExchange)" }))
                 $ReportData.DNS_MX_Records = $mxList
                 $dnsExposure += [pscustomobject]@{ Type='MX'; Detail=$mxList; Risk='Info' }
                 # Check for external mail providers
                 $externalMx = $mxRecords | Where-Object { $_.NameExchange -notmatch "\.$(($Target -split '\.')[-2..-1] -join '\.')$" }
                 if ($externalMx.Count -gt 0) {
-                    $extList = $externalMx | ForEach-Object { $_.NameExchange } -join '; '
+                    $extList = [string]::Join('; ', @($externalMx | ForEach-Object { $_.NameExchange }))
                     $dnsExposure += [pscustomobject]@{ Type='MX-External'; Detail="External mail providers: $extList"; Risk='Warn' }
                     if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add("[!] MX kayıtları harici posta sağlayıcılarını işaret ediyor: $extList")}else{$AdvisorNotes.Add("[!] MX records point to external mail providers: $extList")}
                 }
@@ -2893,7 +2893,7 @@ try {
         } catch { $ReportData.DNS_CAA_Records = 'Query failed' }
 
         # Store exposure summary
-        $ReportData.DNS_Exposure_Summary = $dnsExposure | ForEach-Object { "$($_.Type): $($_.Risk)" } -join ' | '
+        $ReportData.DNS_Exposure_Summary = [string]::Join(' | ', @($dnsExposure | ForEach-Object { "$($_.Type): $($_.Risk)" }))
     }
 } catch {$ReportData.Local_DNS_IP='Çözümlenemedi';Write-Status DNS $_.Exception.Message Red;$AdvisorNotes.Add('[!] DNS çözümlenemedi; hedefe bağlı ağ testleri atlandı.')}
 
