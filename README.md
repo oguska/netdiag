@@ -429,8 +429,9 @@ Application-load and network-correlation mode:
 
 ### WebSec
 
-Web security scan mode (level 5). Includes all Deep checks (inventory, DNS, ICMP, MTU, extended TCP matrix, UDP validation, route/jitter, TLS/SSL inspection, HTTP analysis, GeoIP/ASN, advisor notes) and additionally performs a passive web attack-surface analysis:
+Web security scan mode (level 5). Includes all Deep checks (inventory, DNS, ICMP, MTU, extended TCP matrix, UDP validation, route/jitter, TLS/SSL inspection, HTTP analysis, GeoIP/ASN, advisor notes) and additionally performs a concurrent HTTP load test and a passive web attack-surface analysis:
 
+- Concurrent HTTP load test via the Native C# HTTP Load Engine v2, including percentile, throughput, response-size, status, error, and assertion metrics and network/application correlation.
 - Detects which open TCP ports actually serve HTTP or HTTPS.
 - HTTP method probes (OPTIONS `Allow`), including TRACE, PUT, DELETE, and PATCH detection (TRACE is a cross-site tracing/XST risk).
 - Server banner and `X-Powered-By` disclosure checks.
@@ -449,7 +450,7 @@ Web security scan mode (level 5). Includes all Deep checks (inventory, DNS, ICMP
   - Man-in-the-middle assessment (plaintext HTTP versus TLS with HSTS).
 - Advisor notes with concrete remediation advice for each finding, plus a `Web Attack-Surface Summary` and `Web Attack-Surface Findings` section in the HTML report. Console findings are logged as `[WEBSEC-<port>-<check>]` entries.
 
-The probes are read-only (GET/HEAD/OPTIONS/TRACE plus short partial HTTP requests) and never modify server state. The concurrent load test remains exclusive to JMeter mode.
+The probes are read-only (GET/HEAD/OPTIONS/TRACE plus short partial HTTP requests) and never modify server state. The concurrent load test generates real load traffic; use conservative thread and request counts when testing production systems.
 
 ---
 
@@ -613,7 +614,7 @@ The wizard explains:
 -Port                       Target TCP port, default 443
 -ScanLevel                  Low, Medium, Deep, JMeter, or WebSec
 -HopPingCount               ICMP samples per responsive route hop
--EnableLoadTest             Enables the built-in HTTP load test outside JMeter mode
+-EnableLoadTest             Enables the built-in HTTP load test outside JMeter and WebSec mode
 -JMeterThreads              Maximum concurrent HTTP requests
 -JMeterTotalRequests        Total measured HTTP requests
 -JMeterAssertText           Optional response-body assertion text
@@ -802,7 +803,7 @@ This information is not legal advice. Organizations should separately evaluate o
 - Report footer with NetDiag version and GitHub project link.
 - Collapsed privacy and data-processing disclosure.
 - Official GDPR and KVKK informational links in the HTML disclosure.
-- New `WebSec` scan level (level 5) that runs all Deep checks plus a passive HTTP/HTTPS attack-surface analysis (methods/TRACE, banners, directory listing, cookie flags, per-port security headers, HTTP-to-HTTPS redirect) and a per-port dynamic page analysis (HTTP flood rate-limit evidence, Slowloris resistance, CSRF, SQL-injection probing, reflected XSS, host-header reflection, CRLF injection, Man-in-the-middle), with per-finding remediation advice in the advisor notes and dedicated report rows.
+- New `WebSec` scan level (level 5) that runs all Deep checks plus the concurrent HTTP load test and a passive HTTP/HTTPS attack-surface analysis (methods/TRACE, banners, directory listing, cookie flags, per-port security headers, HTTP-to-HTTPS redirect) and a per-port dynamic page analysis (HTTP flood rate-limit evidence, Slowloris resistance, CSRF, SQL-injection probing, reflected XSS, host-header reflection, CRLF injection, Man-in-the-middle), with per-finding remediation advice in the advisor notes and dedicated report rows.
 
 ### Changed
 

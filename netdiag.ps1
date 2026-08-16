@@ -88,7 +88,7 @@ $Script:EnglishTranslations = [ordered]@{
     'Harici JTL/CSV yolu'='External JTL/CSV path'
     'Özel portlar'='Custom ports'
     'GeoIP/ASN zenginleştirme?'='GeoIP/ASN enrichment?'
-    'Web güvenliği: tüm Deep analizine ek olarak HTTP/HTTPS servisleri için yaygın web saldırı yüzeyi ve çözüm önerileri.'='Web security: all Deep analysis plus common web attack-surface checks and solution advice for HTTP/HTTPS services.'
+    'Web güvenliği: tüm Deep analizine ek olarak eşzamanlı HTTP yük testi, HTTP/HTTPS servisleri için yaygın web saldırı yüzeyi ve çözüm önerileri.'='Web security: all Deep analysis plus a concurrent HTTP load test, common web attack-surface checks, and solution advice for HTTP/HTTPS services.'
     'Web Saldırı Yüzeyi Özeti'='Web Attack-Surface Summary'
     'Web Saldırı Yüzeyi Bulguları'='Web Attack-Surface Findings'
     'Çözüm Önerileri'='Solution Advice'
@@ -2258,7 +2258,7 @@ if ([string]::IsNullOrWhiteSpace($Target)) {
         Write-Host (ConvertTo-LocalizedText '    Her rota adımına gönderilecek ICMP paketi sayısı. Daha yüksek değer daha güvenilir fakat daha yavaştır.') -ForegroundColor DarkGray
         $v = Read-LocalizedHost ' -> Hop başına ping [5]'; if ($v) { $HopPingCount = [int]$v }
     }
-    if($ScanLevel-eq'JMeter'){
+    if($ScanLevel -in @('JMeter','WebSec')){
         Write-Host (ConvertTo-LocalizedText '    Aynı anda gönderilebilecek en yüksek HTTP isteği sayısı.') -ForegroundColor DarkGray
         $v=Read-LocalizedHost ' -> Eşzamanlı kullanıcı [10]';if($v){$JMeterThreads=[int]$v}
         Write-Host (ConvertTo-LocalizedText '    Ana yük testi boyunca gönderilecek toplam HTTP isteği.') -ForegroundColor DarkGray
@@ -2806,7 +2806,7 @@ if(-not $SkipGeoIp -and $targetIP){
 }
 $loadTestSkipped=$false
 $loadTestSkipReason=$null
-if($ScanLevel-eq'JMeter' -or $EnableLoadTest){
+if($ScanLevel -in @('JMeter','WebSec') -or $EnableLoadTest){
     Write-LogHeader '5. GELİŞMİŞ HTTP EŞZAMANLI YÜK TESTİ'
     $protocol=if($Port -in @(443,8443)){'https'}else{'http'}
     $effectiveLoadProtocol = $protocol
