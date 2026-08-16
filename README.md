@@ -355,9 +355,10 @@ The disclosure includes informational links to official EU GDPR and Turkish KVKK
 ### Commit hash-based auto-update
 
 - When the script runs inside a git clone, it reads the current commit hash from the repository HEAD (`git rev-parse --short HEAD`), so the reported version is always accurate after every local or remote commit.
-- When git is unavailable or the script is not inside a repository, it uses the last-known commit hash stamped into the script.
+- When git is unavailable, it queries the GitHub API for the latest commit on `main` and reports that hash; if the machine is offline it falls back to the last-known commit hash stamped into the script.
 - Checks the latest commit on the GitHub `main` branch.
-- Compares the seven-character remote commit hash with the local script version.
+- Compares the seven-character remote commit hash with the local script version (the git HEAD when inside a clone, otherwise the stamped hash).
+- The stamped hash is rewritten to the latest commit whenever an update is downloaded, so end users without git always carry an accurate version marker.
 - Prompts with localized Yes/No options.
 - Downloads the new script to a temporary file.
 - Validates that the downloaded content resembles a PowerShell script.
@@ -761,6 +762,9 @@ This information is not legal advice. Organizations should separately evaluate o
 ## Unreleased
 
 ### Added
+
+- Git-less commit reporting: when `git` is unavailable, the version banner and report fall back to the latest commit from the GitHub API, and to the stamped hash when offline.
+- Update comparison now uses the true local version (git HEAD inside a clone, otherwise the stamped hash), so end users without git are still offered updates on stale copies.
 
 - Protocol-aware TCP service validation with separate handshake and service-verification states.
 - RDP X.224 / negotiation-response validation on TCP/3389.

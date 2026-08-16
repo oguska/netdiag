@@ -517,21 +517,40 @@ function Read-LocalizedHost([string]$Prompt) {
     return Read-Host (ConvertTo-LocalizedText $Prompt)
 }
 
-# The reported commit is derived from the git repository HEAD when the script
-# runs inside a clone, so it stays accurate after every local or remote commit.
-# When git is unavailable or the script is not inside a repository, the
-# last-known value below is used and is patched by Test-ScriptUpdate on update.
-$CurrentCommit = 'c443a31'
+# Version/commit resolution.
+#
+# $LocalCommit is the version baked into this file. Inside a git clone it is
+# replaced by the repository HEAD (git rev-parse --short HEAD), so it stays
+# accurate after every local or remote commit. It is also the value patched by
+# Test-ScriptUpdate when a new version is downloaded and the value compared
+# against GitHub to decide whether an update is available.
+#
+# $CurrentCommit is the identifier shown in the console banner and the HTML
+# report. End users who run the script without git fall back to the latest
+# commit reported by the GitHub API (when reachable) and to $LocalCommit when
+# the machine is offline, so the reported version stays meaningful on any PC.
+$GitHubApiUrl = 'https://api.github.com/repos/oguska/netdiag/commits/main'
+$GitHubRawUrl = 'https://raw.githubusercontent.com/oguska/netdiag/refs/heads/main/netdiag.ps1'
+$GitHubProjectUrl = 'https://github.com/oguska/netdiag'
+$LocalCommit = '8511ba9'
+$commitFromGit = $false
 if (Get-Command git -ErrorAction SilentlyContinue) {
     try {
         $repoDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
         $commitProbe = & git -C $repoDir rev-parse --short HEAD 2>$null
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($commitProbe)) { $CurrentCommit = $commitProbe.Trim() }
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($commitProbe)) { $LocalCommit = $commitProbe.Trim(); $commitFromGit = $true }
     } catch {}
 }
-$GitHubApiUrl = 'https://api.github.com/repos/oguska/netdiag/commits/main'
-$GitHubRawUrl = 'https://raw.githubusercontent.com/oguska/netdiag/refs/heads/main/netdiag.ps1'
-$GitHubProjectUrl = 'https://github.com/oguska/netdiag'
+$CurrentCommit = $LocalCommit
+if (-not $commitFromGit) {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $headers = @{ 'User-Agent' = 'NetDiag-PowerShell' }
+        $commitResponse = Invoke-RestMethod -Uri $GitHubApiUrl -Headers $headers -TimeoutSec 5 -ErrorAction Stop
+        $latestCommit = [string]$commitResponse.sha
+        if ($latestCommit.Length -ge 7) { $CurrentCommit = $latestCommit.Substring(0,7) }
+    } catch {}
+}
 $GdprInformationUrl = 'https://commission.europa.eu/law/law-topic/data-protection/information-business-and-organisations/principles-gdpr_en'
 $KvkkInformationUrl = 'https://www.kvkk.gov.tr/Icerik/2033/Aydinlatma-Yukumlulugu-'
 
@@ -1917,8 +1936,8 @@ function Test-ScriptUpdate {
         $latest=[string]$response.sha
         if ($latest.Length -lt 7) { throw 'Geçersiz commit yanıtı.' }
         $latest=$latest.Substring(0,7)
-        if ($CurrentCommit -eq $latest) { Write-Status UPDATE "Script güncel ($CurrentCommit)." Green;return }
-        Write-Status UPDATE (ConvertTo-LocalizedText "Güncelleme mevcut. Yerel sürüm: $CurrentCommit | uzak sürüm: $latest") Yellow
+        if ($LocalCommit -eq $latest) { Write-Status UPDATE "Script güncel ($CurrentCommit)." Green;return }
+        Write-Status UPDATE (ConvertTo-LocalizedText "Güncelleme mevcut. Yerel sürüm: $LocalCommit | uzak sürüm: $latest") Yellow
         Write-Host (ConvertTo-LocalizedText '    Güncelleme mevcut script dosyasını doğruladıktan sonra değiştirecektir.') -ForegroundColor DarkGray
         $yesNoLabel = Get-LocalizedYesNoLabel
         $updateAnswer = Read-LocalizedHost " -> Güncellensin mi? ($yesNoLabel)"
@@ -1927,7 +1946,7 @@ function Test-ScriptUpdate {
         try {
             $raw=(Invoke-WebRequest -Uri $GitHubRawUrl -Headers $headers -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop).Content
             if ([string]::IsNullOrWhiteSpace($raw) -or $raw -notmatch '(?i)CmdletBinding|param\s*\(') { throw 'İndirilen içerik PowerShell scripti görünmüyor.' }
-            $raw=($raw -replace '(?<=CurrentCommit\s*=\s*["''])([a-f0-9]{7})(?=["''])',$latest)
+            $raw=($raw -replace '(?<=LocalCommit\s*=\s*["''])([a-f0-9]{7})(?=["''])',$latest)
             [IO.File]::WriteAllText($tempFile,$raw,(New-Object Text.UTF8Encoding($false)))
             $tokens=$null;$parseErrors=$null
             [Management.Automation.Language.Parser]::ParseFile($tempFile,[ref]$tokens,[ref]$parseErrors)|Out-Null
