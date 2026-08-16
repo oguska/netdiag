@@ -222,6 +222,7 @@ $Script:EnglishTranslations = [ordered]@{
     'Yanıt Boyutu'='Response Size'
     'İndirme Verimliliği'='Download Efficiency'
     'Kritik'='Critical'
+    'saldırı yüzeyi ve sayfa analizi yapılıyor...'='attack-surface and page analysis in progress...'
     'Orta'='Moderate'
     'İyi'='Good'
     'Optimizasyon Önerileri'='Optimization Suggestions'
@@ -3311,7 +3312,7 @@ if ($dnsOk -and $ScanLevel -eq 'WebSec') {
         }
         if (-not $isWeb) { continue }
         $webPortsProbed += $wp
-        Write-Status "WEBSEC-$wp" "$wpProto servisi doğrulandı; saldırı yüzeyi ve sayfa analizi yapılıyor..." Cyan
+        Write-Status "WEBSEC-$wp" "$(ConvertTo-LocalizedText "$wpProto servisi doğrulandı; saldırı yüzeyi ve sayfa analizi yapılıyor...")" Cyan
         $surfaceItems = @(Test-WebSecuritySurface -ComputerName $Target -Port $wp -Protocol $wpProto -TimeoutSec $HttpTimeoutSec) + @(Test-WebPageAnalyzer -ComputerName $Target -Port $wp -Protocol $wpProto -TimeoutSec $HttpTimeoutSec)
         foreach ($surfaceItem in $surfaceItems) {
             $surfaceItem | Add-Member -NotePropertyName Port -NotePropertyValue $wp -Force
