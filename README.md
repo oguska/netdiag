@@ -454,8 +454,18 @@ Web security scan mode (level 5). Includes all Deep checks (inventory, DNS, ICMP
   - Encoded path-traversal / local-file-inclusion probing.
   - Mixed-content detection (http:// references on HTTPS pages).
   - Subresource Integrity (integrity=) check on external scripts.
+  - robots.txt analysis (Sitemap presence, Disallow completeness).
+  - Client-access policy file detection (clientaccesspolicy.xml, crossdomain.xml).
+  - security.txt presence and field validation (Contact, Policy).
+  - Sensitive-file discovery (backups, .env, .bak, .sql, phpinfo, debug logs).
+  - Information-disclosure detection (debug headers, verbose error pages).
+  - Cleartext credential submission (password fields over HTTP).
+  - Commented-code / debug-info scanning in HTML source.
+  - Login-interface and admin-page discovery.
+  - Outdated JavaScript library detection (jQuery, Bootstrap, Angular, etc.).
+  - Server-misconfiguration summary (TRACE, missing headers, verbose errors).
   - Man-in-the-middle assessment (plaintext HTTP versus TLS with HSTS).
-- Advisor notes with concrete remediation advice for each finding, plus a `Web Attack-Surface Summary` and `Web Attack-Surface Findings` section in the HTML report. Console findings are logged as `[WEBSEC-<port>-<check>]` entries.
+- Each finding is matched with an inline **Solution** column in the HTML report table, including Nginx/Apache/IIS how-to examples. Console findings are logged as `[WEBSEC-<port>-<check>]` entries.
 
 The probes are read-only (GET/HEAD/OPTIONS/TRACE plus short partial HTTP requests) and never modify server state. The concurrent load test generates real load traffic; use conservative thread and request counts when testing production systems.
 
@@ -811,10 +821,11 @@ This information is not legal advice. Organizations should separately evaluate o
 - Collapsed privacy and data-processing disclosure.
 - Official GDPR and KVKK informational links in the HTML disclosure.
 - A GeoIP/ASN paragraph in the collapsed HTML privacy notice that discloses the use of the third-party ip-api.com service (shown only when GeoIP/ASN enrichment actually ran; it also includes the same statement in the advisor notes).
-- New `WebSec` scan level (level 5) that runs all Deep checks plus the concurrent HTTP load test and a passive HTTP/HTTPS attack-surface analysis (methods/TRACE, banners, directory listing, cookie flags, per-port security headers, HTTP-to-HTTPS redirect) and a per-port dynamic page analysis (HTTP flood rate-limit evidence, Slowloris resistance, CSRF, SQL-injection probing, reflected XSS, host-header reflection, CRLF injection, open-redirect probing, CORS misconfiguration, sensitive-file exposure, path-traversal probing, mixed-content detection, Subresource Integrity check, Man-in-the-middle), with per-finding remediation advice in the advisor notes and dedicated report rows.
+- New `WebSec` scan level (level 5) that runs all Deep checks plus the concurrent HTTP load test and a passive HTTP/HTTPS attack-surface analysis (methods/TRACE, banners, directory listing, cookie flags, per-port security headers, HTTP-to-HTTPS redirect) and a per-port dynamic page analysis (HTTP flood rate-limit evidence, Slowloris resistance, CSRF, SQL-injection probing, reflected XSS, host-header reflection, CRLF injection, open-redirect probing, CORS misconfiguration, sensitive-file exposure, path-traversal probing, mixed-content detection, Subresource Integrity check, robots.txt analysis, client-access policy detection, security.txt validation, sensitive-file discovery, information-disclosure detection, cleartext credential submission, commented-code scanning, login-interface and admin-page discovery, outdated JavaScript library detection, server-misconfiguration summary, Man-in-the-middle), with an inline **Solution** column in the report table including Nginx/Apache/IIS how-to examples.
 
 ### Changed
 
+- Restructured the WebSec report table to include an inline **Solution** column with matched remediation advice and Nginx/Apache/IIS how-to examples, replacing the separate advisor panel at the bottom.
 - Extended the HTML report infographics with new visualizations: a network RTT distribution scale (good/fair/poor zones with average and p95 markers), HTTP status-code and error-type distribution stacked bars, an HTTP timing breakdown (header/TTFB versus download), a security-header score conic gauge, an SSL certificate remaining-validity conic gauge, and hop-by-hop average-latency bars; latency percentile bars are now severity-colored.
 - Split the HTML report metric grid into three grouped sections (`General System Metrics`, `Network Metrics`, and `Application Metrics`) under the existing umbrella heading, with each group rendered in its own responsive card grid.
 - Extended Deep and JMeter scan matrices with common mail and database ports.

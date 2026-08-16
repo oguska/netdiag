@@ -2004,6 +2004,198 @@ function Test-WebPageAnalyzer {
             $items.Add([pscustomobject]@{ Check='Subresource Integrity'; Status='Pass'; Detail='All external scripts include Subresource Integrity (integrity=) attributes' })
         }
 
+        $robotsRaw = & $rawGetProbe '/robots.txt' @{} 2048
+        if ($robotsRaw -match '^HTTP/\S+\s+200') {
+            $robotsDisallow = [regex]::Matches($robotsRaw, '(?mi)^\s*Disallow:\s*\S')
+            $robotsSitemap = [regex]::Matches($robotsRaw, '(?mi)^\s*Sitemap:\s*\S')
+            if ($robotsSitemap.Count -eq 0 -and $robotsDisallow.Count -gt 0) {
+                $items.Add([pscustomobject]@{ Check='robots.txt'; Status='Warn'; Detail="robots.txt contains $($robotsDisallow.Count) Disallow rule(s) but no Sitemap directive" })
+            } elseif ($robotsDisallow.Count -eq 0) {
+                $items.Add([pscustomobject]@{ Check='robots.txt'; Status='Warn'; Detail='robots.txt allows access to all paths; no Disallow rules are defined' })
+            } else {
+                $items.Add([pscustomobject]@{ Check='robots.txt'; Status='Pass'; Detail="robots.txt present with $($robotsDisallow.Count) Disallow rule(s) and $($robotsSitemap.Count) Sitemap directive(s)" })
+            }
+        } else {
+            $items.Add([pscustomobject]@{ Check='robots.txt'; Status='Info'; Detail='No robots.txt found on the server' })
+        }
+
+        $clientAccessFiles = @('/clientaccesspolicy.xml', '/crossdomain.xml')
+        $clientAccessExposed = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($caFile in $clientAccessFiles) {
+            $caResponse = & $rawGetProbe $caFile @{} 1536
+            if ($caResponse -match '^HTTP/\S+\s+200' -and $caResponse -match '(?i)(<allow-access-from|<domain-config|<cross-domain-policy)') {
+                $clientAccessExposed.Add($caFile)
+            }
+        }
+        if ($clientAccessExposed.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Client Access Policy'; Status='Warn'; Detail=("Cross-domain policy file(s) exposed: " + ($clientAccessExposed -join '; ') + "; may allow unauthorized cross-origin access") })
+        } else {
+            $items.Add([pscustomobject]@{ Check='Client Access Policy'; Status='Pass'; Detail='No clientaccesspolicy.xml or crossdomain.xml found' })
+        }
+
+        $secTxtRaw = & $rawGetProbe '/.well-known/security.txt' @{} 2048
+        if ($secTxtRaw -match '^HTTP/\S+\s+200' -and $secTxtRaw -match '(?i)(Contact|Contact:|Policy:|Encryption:)') {
+            $items.Add([pscustomobject]@{ Check='security.txt'; Status='Pass'; Detail='security.txt found with disclosure contact information' })
+        } elseif ($secTxtRaw -match '^HTTP/\S+\s+200') {
+            $items.Add([pscustomobject]@{ Check='security.txt'; Status='Warn'; Detail='security.txt found but is missing required fields (Contact/Policy/Encryption)' })
+        } else {
+            $items.Add([pscustomobject]@{ Check='security.txt'; Status='Warn'; Detail='No security.txt found at /.well-known/security.txt; vulnerability disclosure contact is not published' })
+        }
+
+        $sensitiveFilePatterns = @(
+            @{ Url='/.git/HEAD'; Pattern='(?i)ref:\s*refs/heads' },
+            @{ Url='/.env'; Pattern='(?i)(secret|password|api[_-]?key|token|aws_)=' },
+            @{ Url='/.env.bak'; Pattern='(?i)(secret|password|api[_-]?key|token)=' },
+            @{ Url='/config.php.bak'; Pattern='(?i)(password|db_pass|mysql_connect|mysqli_connect)' },
+            @{ Url='/config.php~'; Pattern='(?i)(password|db_pass|mysql_connect|mysqli_connect)' },
+            @{ Url='/config.yml'; Pattern='(?i)(password|secret|api_key|token):' },
+            @{ Url='/config.json'; Pattern='(?i)"(password|secret|api_key|token)"\s*:' },
+            @{ Url='/database.sql'; Pattern='(?i)(CREATE TABLE|INSERT INTO|DROP TABLE)' },
+            @{ Url='/dump.sql'; Pattern='(?i)(CREATE TABLE|INSERT INTO|DROP TABLE)' },
+            @{ Url='/backup.zip'; Pattern='(?s)PK\x03\x04' },
+            @{ Url='/backup.tar.gz'; Pattern='(?s)\x1f\x8b\x08' },
+            @{ Url='/db.sql'; Pattern='(?i)(CREATE TABLE|INSERT INTO|DROP TABLE)' },
+            @{ Url='/debug.log'; Pattern='(?i)(stack trace|exception|traceback|at\s+\S+\.\w+\(\))' },
+            @{ Url='/phpinfo.php'; Pattern='(?i)phpinfo\(\)' },
+            @{ Url='/WEB-INF/web.xml'; Pattern='(?i)(<web-app|servlet-class)' },
+            @{ Url='/server-status'; Pattern='(?i)apache\s+server\s+status' },
+            @{ Url='/.htaccess'; Pattern='(?i)(RewriteEngine|Deny\s+from|AllowOverride)' }
+        )
+        $sensitiveHits = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($sensitivePattern in $sensitiveFilePatterns) {
+            if ($sensitiveHits.Count -ge 3) { break }
+            $sensitiveResponse = & $rawGetProbe $sensitivePattern.Url @{} 1536
+            if ($sensitiveResponse -match '^HTTP/\S+\s+200' -and $sensitiveResponse -match $sensitivePattern.Pattern) { $sensitiveHits.Add($sensitivePattern.Url) }
+        }
+        if ($sensitiveHits.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Sensitive Files'; Status='Danger'; Detail=("Sensitive file(s) accessible: " + ($sensitiveHits -join '; ')) })
+        } else {
+            $items.Add([pscustomobject]@{ Check='Sensitive Files'; Status='Pass'; Detail='No known sensitive files (backups, dumps, configs, debug logs, .env, phpinfo) were accessible' })
+        }
+
+        $disclosureMarkers = @('x-debug','x-debug-token','x-debug-bar','x-powered-by','x-aspnet-version','x-aspnetmvc-version','x-generator','x-drupal','x-varnish','x-oss','x-request-id','x-runtime','x-trace','server:')
+        $disclosureFound = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($headerKey in $responseHeaders.Keys) {
+            foreach ($marker in $disclosureMarkers) {
+                if ($headerKey -like "*$marker*") {
+                    $disclosureFound.Add("${headerKey}: $(($responseHeaders[$headerKey]).Substring(0, [Math]::Min(40, ($responseHeaders[$headerKey]).Length)))")
+                    break
+                }
+            }
+        }
+        if ($pageResponse.StatusCode -ge 500) {
+            if ($bodyText -match '(?i)(stack trace|exception|traceback|debug|error in|line \d+|file:.*line:)') { $disclosureFound.Add('Verbose error page with stack trace or debug info') }
+        }
+        if ($disclosureFound.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Information Disclosure'; Status='Warn'; Detail=("Information-disclosure markers found: " + ($disclosureFound -join '; ')) })
+        } else {
+            $items.Add([pscustomobject]@{ Check='Information Disclosure'; Status='Pass'; Detail='No information-disclosure markers found in response headers or error pages' })
+        }
+
+        $cleartextCredentialForms = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($formBlock in $formBlocks) {
+            $action = '/'
+            if ($formBlock.Value -match '(?i)\baction\s*=\s*["'']([^"'']+)["'']') { $action = $matches[1] }
+            $hasPasswordField = $formBlock.Value -match '(?i)<input\b[^>]*\btype\s*=\s*["'']password["'']'
+            if ($hasPasswordField) {
+                $formIsHttp = $false
+                if ($action -match '^https?://') { $formIsHttp = $action -match '^http://' }
+                elseif ($Protocol -eq 'http') { $formIsHttp = $true }
+                if ($formIsHttp) { $cleartextCredentialForms.Add($action) }
+            }
+        }
+        if ($cleartextCredentialForms.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Cleartext Credentials'; Status='Danger'; Detail=("Password field(s) found in forms submitting to plain HTTP: " + ($cleartextCredentialForms -join '; ')) })
+        } else {
+            $items.Add([pscustomobject]@{ Check='Cleartext Credentials'; Status='Pass'; Detail='No password fields found submitting to plain HTTP' })
+        }
+
+        $commentPatterns = @('(?i)<!--.*?(password|secret|api[_-]?key|token|todo|fixme|hack|bug|debug|internal|admin)', '(?i)(password|secret|api[_-]?key|token)\s*[:=]\s*[''"][^''"]{4,}', '(?i)(mysql_connect|mysqli_connect|pg_connect|new\s+PDO)\s*\(')
+        $commentMatches = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($commentPattern in $commentPatterns) {
+            $foundComments = @([regex]::Matches($bodyText, $commentPattern))
+            foreach ($cm in $foundComments) {
+                if ($commentMatches.Count -ge 3) { break }
+                $snippet = $cm.Value.Substring(0, [Math]::Min(80, $cm.Value.Length))
+                if (-not ($commentMatches -contains $snippet)) { $commentMatches.Add($snippet) }
+            }
+        }
+        if ($commentMatches.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Commented Code'; Status='Info'; Detail=("Sensitive commented code or debug info found: " + ($commentMatches -join '; ')) })
+        } else {
+            $items.Add([pscustomobject]@{ Check='Commented Code'; Status='Pass'; Detail='No sensitive commented code or debug information found in page source' })
+        }
+
+        $loginPaths = @('/wp-login.php','/wp-admin/','/administrator/','/login','/signin','/auth','/cpanel','/phpmyadmin/','/console')
+        $accessiblePaths = New-Object 'System.Collections.Generic.List[string]'
+        $loginFormFound = $false
+        foreach ($fb in $formBlocks) {
+            if ($fb.Value -match '(?i)<input\b[^>]*\btype\s*=\s*["'']password["'']') { $loginFormFound = $true; break }
+        }
+        foreach ($loginPath in $loginPaths) {
+            $loginProbe = & $rawGetProbe $loginPath @{} 1024
+            if ($loginProbe -match '^HTTP/\S+\s+200' -or $loginProbe -match '^HTTP/\S+\s+3\d\d') { $accessiblePaths.Add($loginPath) }
+        }
+        if ($loginFormFound -and $accessiblePaths.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Login Interface'; Status='Info'; Detail="Login form on page; accessible admin/login paths: " + ($accessiblePaths -join '; ') })
+        } elseif ($loginFormFound) {
+            $items.Add([pscustomobject]@{ Check='Login Interface'; Status='Info'; Detail='Login form detected on the page' })
+        } elseif ($accessiblePaths.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Login Interface'; Status='Info'; Detail="Accessible admin/login paths: " + ($accessiblePaths -join '; ') })
+        }
+
+        $jsLibPatterns = @(
+            @{ Pattern='(?i)jquery[.-](\d+\.\d+\.\d+)'; Name='jQuery' },
+            @{ Pattern='(?i)bootstrap[.-](\d+\.\d+\.\d+)'; Name='Bootstrap' },
+            @{ Pattern='(?i)angular[.-](\d+\.\d+\.\d+)'; Name='AngularJS' },
+            @{ Pattern='(?i)prototype[.-](\d+\.\d+\.\d+)'; Name='Prototype.js' },
+            @{ Pattern='(?i)mootools[.-](\d+\.\d+\.\d+)'; Name='MooTools' },
+            @{ Pattern='(?i)script\.aculo\.us[.-](\d+\.\d+\.\d+)'; Name='Script.aculo.us' },
+            @{ Pattern='(?i)dojo[.-](\d+\.\d+\.\d+)'; Name='Dojo' },
+            @{ Pattern='(?i)backbone[.-](\d+\.\d+\.\d+)'; Name='Backbone.js' },
+            @{ Pattern='(?i)underscore[.-](\d+\.\d+\.\d+)'; Name='Underscore.js' }
+        )
+        $outdatedLibs = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($lib in $jsLibPatterns) {
+            $libMatches = @([regex]::Matches($bodyText, $lib.Pattern))
+            foreach ($lm in $libMatches) {
+                $version = $lm.Groups[1].Value
+                $outdatedLibs.Add("$($lib.Name) v$version")
+            }
+        }
+        $outdatedLibs = @($outdatedLibs | Select-Object -Unique)
+        if ($outdatedLibs.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Outdated JS Libraries'; Status='Warn'; Detail=("Potentially outdated JavaScript libraries detected: " + ($outdatedLibs -join '; ')) })
+        }
+
+        $adminPaths = @('/admin/','/admin.php','/administrator/','/manager/','/panel/','/dashboard/','/phpmyadmin/','/pma/','/adminer.php','/wp-admin/','/cgi-bin/','/server-info','/server-status')
+        $exposedAdminPaths = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($adminPath in $adminPaths) {
+            if ($exposedAdminPaths.Count -ge 3) { break }
+            $adminProbe = & $rawGetProbe $adminPath @{} 1024
+            if ($adminProbe -match '^HTTP/\S+\s+200') { $exposedAdminPaths.Add($adminPath) }
+        }
+        if ($exposedAdminPaths.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Admin Pages'; Status='Warn'; Detail=("Potentially exposed admin pages: " + ($exposedAdminPaths -join '; ')) })
+        }
+
+        $configIssues = New-Object 'System.Collections.Generic.List[string]'
+        if ($responseHeaders.ContainsKey('Allow') -and $responseHeaders['Allow'] -match '(?i)TRACK|TRACE') { $configIssues.Add('HTTP TRACK/TRACE method appears enabled') }
+        if ($Protocol -eq 'https') {
+            $hstsPresent = @($responseHeaders.Keys | Where-Object { $_ -match '(?i)^Strict-Transport-Security$' })
+            $cspPresent = @($responseHeaders.Keys | Where-Object { $_ -match '(?i)^Content-Security-Policy$' })
+            $xctoPresent = @($responseHeaders.Keys | Where-Object { $_ -match '(?i)^X-Content-Type-Options$' })
+            $xfoPresent = @($responseHeaders.Keys | Where-Object { $_ -match '(?i)^X-Frame-Options$' })
+            if ($hstsPresent.Count -eq 0) { $configIssues.Add('HSTS header missing on HTTPS site') }
+            if ($cspPresent.Count -eq 0) { $configIssues.Add('Content-Security-Policy header missing') }
+            if ($xctoPresent.Count -eq 0) { $configIssues.Add('X-Content-Type-Options header missing') }
+            if ($xfoPresent.Count -eq 0) { $configIssues.Add('X-Frame-Options header missing') }
+        }
+        if ($pageResponse.StatusCode -ge 500 -and $bodyText -match '(?i)(stack trace|exception|traceback|debug|error in|line \d+|file:.*line:)') { $configIssues.Add('Server returns verbose error pages with stack traces') }
+        if ($configIssues.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Server Misconfiguration'; Status='Warn'; Detail=("Configuration issues found: " + ($configIssues -join '; ')) })
+        }
+
         if ($Protocol -eq 'http') {
             $items.Add([pscustomobject]@{ Check='Man-in-the-Middle'; Status='Danger'; Detail='Plain HTTP carries traffic in clear text; traffic can be intercepted or altered between the user and the server' })
         } else {
@@ -3124,55 +3316,77 @@ if ($dnsOk -and $ScanLevel -eq 'WebSec') {
 
     $solutionText = @{}
     if ($Script:LanguageCode -eq 'tr') {
-        $solutionText['TRACE Method'] = 'TRACE metodu etkin; Cross-Site Tracing (XST) riski taşır. Sunucuda TRACE engellenmelidir (IIS: <verbs> TRACE engelle; Apache: TraceEnable Off; Nginx: TRACE isteklerini reddet).'
+        $solutionText['TRACE Method'] = 'TRACE metodu etkin; XST riski. Nginx: discardante_http_trace off; Apache: TraceEnable Off; IIS: <verbs> ile TRACE engelle.'
         $solutionText['PUT'] = 'PUT metodu açık; yetkisiz içerik değişikliği riski. Yalnızca gerekli metodlara (GET/HEAD/POST/OPTIONS) izin verin.'
         $solutionText['DELETE'] = 'DELETE metodu açık; yetkisiz kaynak silme riski. Yalnızca gerekli metodlara izin verin.'
         $solutionText['PATCH'] = 'PATCH metodu açık; gerekli değilse kısıtlanmalıdır.'
-        $solutionText['Directory Listing'] = 'Klasör listeleme etkin; içerik ve sürüm ifşası riski. Directory browsing/autoindex kapatılmalı ve dizinlere index dosyası eklenmelidir.'
-        $solutionText['Server Banner'] = 'Sunucu banner bilgisi ifşa ediliyor; hedefli saldırı yüzeyi genişliyor. Banner ve sürüm üstbilgileri gizlenmelidir.'
-        $solutionText['X-Powered-By'] = 'Kullanılan teknoloji bileşenleri ifşa ediliyor. X-Powered-By gibi üstbilgiler kaldırılmalıdır.'
-        $solutionText['Cookie Flags'] = 'Çerezlerde Secure/HttpOnly/SameSite bayrakları eksik; XSS üzerinden oturum çalma riski. Çerezler Secure, HttpOnly ve SameSite=Lax/Strict ile işaretlenmelidir.'
-        $solutionText['HTTP to HTTPS'] = 'HTTP/80 trafiği HTTPS uç noktasına yönlendirmiyor; veriler şifrelemesiz ve müdahaleye açık. 301 kalıcı yönlendirme ve HSTS yapılandırılmalıdır.'
-        $solutionText['Security Header'] = 'Güvenlik başlığı zayıf veya eksik. HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy ve Permissions-Policy eklenmelidir.'
-        $solutionText['HTTP Flood'] = 'HTTP Flood saldırılarına karşı WAF/CDN ve istek hız sınırlama (rate limiting) yapılandırılmalı; aynı IP ve kullanıcıdan gelen aşırı GET/POST istekleri engellenmelidir.'
-        $solutionText['Slowloris'] = 'Yavaş istek (Slowloris) saldırılarına karşı sunucu bağlantı ve istek tamamlama süre limitleri kısa tutulmalı; boş ve yarım HTTP başlıkları bekleyen bağlantılar zaman aşımına uğratılmalıdır.'
-        $solutionText['SQL Injection'] = 'Kullanıcı girdisi parametreli sorgularla (prepared statement) ve giriş doğrulamasıyla arındırılmalı; veritabanı hata mesajları son kullanıcıya gösterilmemelidir.'
-        $solutionText['XSS'] = 'Kullanıcı girdisi çıktı sırasında bağlama uygun kodlanmalı (output encoding); CSP başlığı ve HttpOnly çerezler eklenmelidir.'
-        $solutionText['HTTP Host Header'] = 'Sunucu yalnızca bilinen ana bilgisayar adlarını kabul etmeli; rastgele Host başlıkları 400/403 ile reddedilmeli, mutlak URL kullanımına dayalı cache/şifre sıfırlama akışları gözden geçirilmelidir.'
-        $solutionText['CRLF Injection'] = 'İstek parametrelerindeki CR/LF karakterleri nötrleştirilmeli; HTTP başlık değerlerinde satır sonu karakterlerine izin verilmemeli ve istek normalizasyonu yapılmalıdır.'
-        $solutionText['CSRF'] = 'Durum değiştiren (POST) formlara CSRF token eklenmeli; çerezler SameSite=Lax/Strict ile işaretlenmeli ve Origin/Referer doğrulaması yapılmalıdır.'
-        $solutionText['Man-in-the-Middle'] = 'Trafik HTTPS ile şifrelenmeli ve HSTS (Strict-Transport-Security) eklenmeli; HTTP trafiği 301 ile HTTPS üzerinden kalıcı olarak yönlendirilmelidir.'
-        $solutionText['Open Redirect'] = 'Açık yönlendirme riski; url/redirect/next gibi parametreler harici adreslere yönlendirme sağlıyor. Yönlendirmeler yalnızca aynı etki alanındaki bilinen hedeflere izin vermeli ve kullanıcı girdisi doğrulanmadan yönlendirme mantığında kullanılmamalıdır.'
-        $solutionText['CORS'] = 'CORS yapılandırması Access-Control-Allow-Origin içinde isteğin Origin başlığını yansıtıyor ve/veya Allow-Credentials etkin. Yalnızca güvenilen etki alanlarından oluşan bir beyaz liste kullanılmalı ve Allow-Credentials ile birlikte joker (asterisk) kullanılmamalıdır.'
-        $solutionText['Sensitive File Exposure'] = 'Hassas dosyalar (örn. .git, .env, WEB-INF, server-status) web üzerinden erişilebilir durumda. Bu yollara erişim engellenmeli ve dosyalar web kökü dışına taşınmalıdır.'
-        $solutionText['Path Traversal'] = 'Yol gezinme (path traversal) açığı; kodlanmış ../ değerleri dosya sistemi içeriğine erişim sağlıyor. Girdi normalizasyonu ve kök dizin kısıtlamaları (chroot/jail) uygulanmalı, kullanıcı girdisiyle dosya yolu oluşturulmamalıdır.'
-        $solutionText['Mixed Content'] = 'HTTPS sayfası http:// kaynaklarına referans veriyor; tarayıcılar bu kaynakları engeller veya güvensiz olarak işaretler. Tüm kaynaklar HTTPS üzerinden sunulmalıdır.'
-        $solutionText['Subresource Integrity'] = 'Harici script/stylesheet kaynaklarında Subresource Integrity (integrity=) kullanılmıyor. CDN kaynaklarına integrity özetleri eklenmelidir.'
+        $solutionText['Directory Listing'] = 'Klasör listeleme etkin; içerik ve sürüm ifşası riski. Nginx: autoindex off; Apache: Options -Indexes; IIS: directoryBrowsing disabled.'
+        $solutionText['Server Banner'] = 'Sunucu banner bilgisi ifşa ediliyor. Nginx: server_tokens off; Apache: ServerSignature Off; IIS: removeServerHeader enabled.'
+        $solutionText['X-Powered-By'] = 'Teknoloji bileşenleri ifşa ediliyor. Nginx: proxy_hide_header X-Powered-By; Apache: Header unset X-Powered-By; IIS: removeServerHeader enabled.'
+        $solutionText['Cookie Flags'] = 'Çerezlerde Secure/HttpOnly/SameSite eksik. Nginx: add_cookie_flag; PHP: session.cookie_secure=On, session.cookie_httponly=On; IIS: httpOnlyCookies enabled.'
+        $solutionText['HTTP to HTTPS'] = 'HTTP/80 trafiği HTTPS''e yönlendirmiyor. Nginx: return 301 https://...; Apache: Redirect permanent / https://...; IIS: https binding gerekli.'
+        $solutionText['Security Header'] = 'Güvenlik başlığı eksik. HSTS: Nginx add_header Strict-Transport-Security; CSP: add_header Content-Security-Policy; X-Frame-Options: add_header X-Frame-Options DENY; X-Content-Type-Options: add_header X-Content-Type-Options nosniff.'
+        $solutionText['HTTP Flood'] = 'Rate limiting/WAF eksik. Nginx: limit_req_zone + limit_req; Apache: mod_ratelimit; Cloudflare/AWS WAF hız sınırlama.'
+        $solutionText['Slowloris'] = 'Sunucu yavaş isteklere açık. Nginx: client_header_timeout 5s, client_body_timeout 5s; Apache: Timeout 5; IIS: headerWaitTimeout kısa tutulmalı.'
+        $solutionText['SQL Injection'] = 'SQL enjeksiyon açığı. Hazırlanmış sorgular (prepared statements) kullanın; veritabanı hata mesajlarını gizleyin; parameterized query kullanın.'
+        $solutionText['XSS'] = 'XSS açığı. Çıktı kodlaması (output encoding) uygulayın; CSP ekleyin; HttpOnly çerez işaretleyin.'
+        $solutionText['HTTP Host Header'] = 'Host başlığı doğrulaması eksik. Sunucu yalnızca bilinen hostname''leri kabul etmeli; rastgele Host başlıkları reddedilmeli.'
+        $solutionText['CRLF Injection'] = 'CRLF enjeksiyon açığı. İstek parametrelerinde CR/LF karakterlerini nötrleştirin; HTTP başlık değerlerinde satır sonu karakterlerine izin vermeyin.'
+        $solutionText['CSRF'] = 'CSRF token eksik. POST formlara CSRF token ekleyin; çerezleri SameSite=Lax/Strict ile işaretleyin; Origin/Referer doğrulaması yapın.'
+        $solutionText['Man-in-the-Middle'] = 'HTTPS + HSTS gerekli. Nginx: return 301 https://...; HSTS: add_header Strict-Transport-Security max-age=31536000; Apache: Redirect permanent / https://...'
+        $solutionText['Open Redirect'] = 'Açık yönlendirme. URL parametrelerinde harici adreslere izin vermeyin; yönlendirmeleri aynı etki alanıyla sınırlayın; kullanıcı girdisini doğrulayın.'
+        $solutionText['CORS'] = 'CORS yapılandırması açık. Access-Control-Allow-Origin yalnızca güvenilen domain''lere ayarlayın; Allow-Credentials ile joker kullanmayın.'
+        $solutionText['Sensitive File Exposure'] = 'Hassas dosyalar açık. Nginx: location ~ /\. { deny all; }; Apache: Require all denied via FilesMatch; dosyaları web kökünden taşıyın.'
+        $solutionText['Path Traversal'] = 'Yol gezinme açığı. Girdi normalizasyonu uygulayın; kök dizin kısıtlamaları kullanın; kullanıcı girdisiyle dosya yolu oluşturmayın.'
+        $solutionText['Mixed Content'] = 'HTTPS sayfası http:// kaynağı kullanıyor. Tüm kaynakları HTTPS ile sunun;mixed-content içerikleri güncelleyin.'
+        $solutionText['Subresource Integrity'] = 'Harici script''lerde integrity eksik. CDN kaynaklarına integrity özetleri ekleyin; integrity ve crossorigin attribute''larını kullanın.'
+        $solutionText['robots.txt'] = 'robots.txt''de Sitemap eksik veya çok geniş izin verilmiş. Sitemap ekleyin; hassas dizinleri Disallow ile kısıtlayın.'
+        $solutionText['Client Access Policy'] = 'Cross-domain policy dosyası açık. clientaccesspolicy.xml / crossdomain.xml dosyalarını kısıtlayın veya kaldırın.'
+        $solutionText['security.txt'] = 'security.txt eksik veya hatalı. /.well-known/security.txt dosyası oluşturun; Contact: mailto: ekleyin.'
+        $solutionText['Sensitive Files'] = 'Hassas dosyalar (backup, .env, debug) açık. Nginx: location ~ (\.env|\.bak|\.sql) { deny all; }; web kökünden kaldırın.'
+        $solutionText['Information Disclosure'] = 'Bilgi ifşası. Debug başlıklarını (X-Debug, X-Powered-By) kaldırın; hata sayfalarında stack trace göstermeyin.'
+        $solutionText['Cleartext Credentials'] = 'Şifre açık metin olarak gönderiliyor. Tüm form action''ları HTTPS ile işaretleyin; HTTP''yi HTTPS''e yönlendirin.'
+        $solutionText['Commented Code'] = 'Yorum satırlarında hassas kod/debug bilgisi var. Üretim ortamında yorum satırlarını ve debug bilgilerini kaldırın.'
+        $solutionText['Login Interface'] = 'Giriş arayüzü tespit edildi. Admin sayfalarını kısıtlayın; erişim kontrolü uygulayın; brute-force koruması ekleyin.'
+        $solutionText['Outdated JS Libraries'] = 'Eski JS kütüphaneleri tespit edildi. Kütüphaneleri güncelleyin; bilinen güvenlik açıklarını kontrol edin.'
+        $solutionText['Admin Pages'] = 'Yönetici sayfaları açık. Erişimi kısıtlayın; IP bazlı erişim kontrolü uygulayın; VPN/whitelist kullanın.'
+        $solutionText['Server Misconfiguration'] = 'Sunucu yapılandırma sorunu. TRACE engelleyin; eksik güvenlik başlıklarını ekleyin; verbose hata sayfalarını devre dışı bırakın.'
     } else {
-        $solutionText['TRACE Method'] = 'The TRACE method is enabled, creating a Cross-Site Tracing (XST) risk. Disable TRACE on the server (IIS: block TRACE in <verbs>; Apache: TraceEnable Off; Nginx: reject TRACE requests).'
-        $solutionText['PUT'] = 'The PUT method is allowed, risking unauthorized content modification. Allow only the required methods (GET/HEAD/POST/OPTIONS).'
-        $solutionText['DELETE'] = 'The DELETE method is allowed, risking unauthorized resource deletion. Allow only the required methods.'
-        $solutionText['PATCH'] = 'The PATCH method is allowed; restrict it unless required.'
-        $solutionText['Directory Listing'] = 'Directory listing appears enabled, exposing content and versions. Disable directory browsing/autoindex and add index files.'
-        $solutionText['Server Banner'] = 'The server banner is disclosed, enlarging the targeted attack surface. Hide banner and version headers.'
-        $solutionText['X-Powered-By'] = 'Technology components are disclosed. Remove headers such as X-Powered-By.'
-        $solutionText['Cookie Flags'] = 'Cookies are missing Secure/HttpOnly/SameSite flags, risking session theft via XSS. Mark cookies Secure, HttpOnly, and SameSite=Lax/Strict.'
-        $solutionText['HTTP to HTTPS'] = 'HTTP/80 does not redirect to HTTPS; data is unencrypted and interceptable. Configure a permanent 301 redirect and HSTS.'
-        $solutionText['Security Header'] = 'A security header is weak or missing. Add HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, and Permissions-Policy.'
-        $solutionText['HTTP Flood'] = 'Configure a WAF/CDN and request rate limiting against HTTP Flood attacks; block excessive GET/POST requests from the same IP or user.'
-        $solutionText['Slowloris'] = 'Keep server connection and request-completion time limits short against Slowloris; time out connections that wait on empty or partial HTTP headers.'
-        $solutionText['SQL Injection'] = 'Sanitize user input with parameterized queries (prepared statements) and input validation; never expose database error messages to end users.'
-        $solutionText['XSS'] = 'Encode user input on output in context; add a Content-Security-Policy header and HttpOnly cookies.'
-        $solutionText['HTTP Host Header'] = 'Accept only known hostnames; reject arbitrary Host headers with 400/403 and review cache/password-reset flows that rely on absolute URLs.'
-        $solutionText['CRLF Injection'] = 'Neutralize CR/LF characters in request parameters; forbid line terminators in HTTP header values and normalize requests.'
-        $solutionText['CSRF'] = 'Add CSRF tokens to state-changing (POST) forms; mark cookies SameSite=Lax/Strict and validate Origin/Referer.'
-        $solutionText['Man-in-the-Middle'] = 'Encrypt traffic with HTTPS and add HSTS (Strict-Transport-Security); permanently redirect HTTP traffic to HTTPS with a 301.'
-        $solutionText['Open Redirect'] = 'Open-redirect risk: parameters such as url/redirect/next redirect to external addresses. Restrict redirects to known same-domain targets and never use unvalidated user input in redirect logic.'
-        $solutionText['CORS'] = 'The CORS configuration reflects the request Origin in Access-Control-Allow-Origin and/or enables Allow-Credentials. Restrict it to a whitelist of trusted origins and never combine Allow-Credentials with a wildcard.'
-        $solutionText['Sensitive File Exposure'] = 'Sensitive files (e.g. .git, .env, WEB-INF, server-status) are accessible over the web. Block access to these paths and keep the files out of the web root.'
-        $solutionText['Path Traversal'] = 'Path-traversal flaw: encoded ../ values reach file-system content. Apply input normalization and root-directory restrictions (chroot/jail); never build file paths from user input.'
-        $solutionText['Mixed Content'] = 'The HTTPS page references http:// resources; browsers block or flag them as insecure. Serve all resources over HTTPS.'
-        $solutionText['Subresource Integrity'] = 'External script/stylesheet resources lack Subresource Integrity (integrity=) attributes. Add integrity hashes for CDN-hosted resources.'
+        $solutionText['TRACE Method'] = 'TRACE method enabled; XST risk. Nginx: discardante_http_trace off; Apache: TraceEnable Off; IIS: block TRACE via <verbs>.'
+        $solutionText['PUT'] = 'PUT method allowed; unauthorized content change risk. Allow only GET/HEAD/POST/OPTIONS.'
+        $solutionText['DELETE'] = 'DELETE method allowed; unauthorized resource deletion risk. Allow only required methods.'
+        $solutionText['PATCH'] = 'PATCH method allowed; restrict unless required.'
+        $solutionText['Directory Listing'] = 'Directory listing enabled; content/version exposure. Nginx: autoindex off; Apache: Options -Indexes; IIS: directoryBrowsing disabled.'
+        $solutionText['Server Banner'] = 'Server banner disclosed; enlarges attack surface. Nginx: server_tokens off; Apache: ServerSignature Off; IIS: removeServerHeader enabled.'
+        $solutionText['X-Powered-By'] = 'Technology components disclosed. Nginx: proxy_hide_header X-Powered-By; Apache: Header unset X-Powered-By; IIS: removeServerHeader.'
+        $solutionText['Cookie Flags'] = 'Cookies missing Secure/HttpOnly/SameSite flags. Nginx: add_cookie_flag; PHP: session.cookie_secure=On, session.cookie_httponly=On; IIS: httpOnlyCookies enabled.'
+        $solutionText['HTTP to HTTPS'] = 'HTTP/80 does not redirect to HTTPS. Nginx: return 301 https://...; Apache: Redirect permanent / https://...; IIS: add HTTPS binding.'
+        $solutionText['Security Header'] = 'Security header missing. HSTS: add_header Strict-Transport-Security; CSP: add_header Content-Security-Policy; X-Frame-Options: add_header X-Frame-Options DENY; X-Content-Type-Options: add_header X-Content-Type-Options nosniff.'
+        $solutionText['HTTP Flood'] = 'No rate limiting/WAF. Nginx: limit_req_zone + limit_req; Apache: mod_ratelimit; deploy Cloudflare/AWS WAF rate limiting.'
+        $solutionText['Slowloris'] = 'Server vulnerable to slow requests. Nginx: client_header_timeout 5s, client_body_timeout 5s; Apache: Timeout 5; IIS: short headerWaitTimeout.'
+        $solutionText['SQL Injection'] = 'SQL injection vulnerability. Use prepared statements (parameterized queries); hide database errors from users; validate input.'
+        $solutionText['XSS'] = 'XSS vulnerability. Apply output encoding; add Content-Security-Policy header; mark cookies HttpOnly.'
+        $solutionText['HTTP Host Header'] = 'Host header validation missing. Server should accept only known hostnames; reject arbitrary Host headers with 400/403.'
+        $solutionText['CRLF Injection'] = 'CRLF injection flaw. Neutralize CR/LF characters in request parameters; forbid line terminators in HTTP header values.'
+        $solutionText['CSRF'] = 'CSRF token missing. Add CSRF tokens to POST forms; mark cookies SameSite=Lax/Strict; validate Origin/Referer.'
+        $solutionText['Man-in-the-Middle'] = 'HTTPS + HSTS required. Nginx: return 301 https://...; add_header Strict-Transport-Security max-age=31536000; Apache: Redirect permanent / https://...'
+        $solutionText['Open Redirect'] = 'Open-redirect risk. Do not redirect to external URLs in parameters; restrict redirects to same-domain targets; validate user input.'
+        $solutionText['CORS'] = 'CORS misconfigured. Set Access-Control-Allow-Origin only for trusted domains; never combine Allow-Credentials with a wildcard.'
+        $solutionText['Sensitive File Exposure'] = 'Sensitive files exposed. Nginx: location ~ /\. { deny all; }; Apache: Require denied via FilesMatch; move files out of web root.'
+        $solutionText['Path Traversal'] = 'Path-traversal flaw. Apply input normalization; use root-directory restrictions; never build file paths from user input.'
+        $solutionText['Mixed Content'] = 'HTTPS page references http:// resources. Serve all resources over HTTPS; update mixed-content references.'
+        $solutionText['Subresource Integrity'] = 'External scripts lack SRI. Add integrity hashes with the integrity and crossorigin attributes.'
+        $solutionText['robots.txt'] = 'robots.txt missing Sitemap or overly permissive. Add Sitemap directive; restrict sensitive directories with Disallow.'
+        $solutionText['Client Access Policy'] = 'Cross-domain policy file exposed. Restrict or remove clientaccesspolicy.xml / crossdomain.xml.'
+        $solutionText['security.txt'] = 'security.txt missing or incomplete. Create /.well-known/security.txt; include Contact: mailto:.'
+        $solutionText['Sensitive Files'] = 'Sensitive files (backups, .env, debug) exposed. Nginx: location ~ (\.env|\.bak|\.sql) { deny all; }; remove from web root.'
+        $solutionText['Information Disclosure'] = 'Information disclosed via headers/errors. Remove debug headers (X-Debug, X-Powered-By); disable verbose error pages.'
+        $solutionText['Cleartext Credentials'] = 'Credentials submitted in clear text. Mark all form actions as HTTPS; redirect HTTP to HTTPS.'
+        $solutionText['Commented Code'] = 'Sensitive code/comments found in source. Remove comment blocks and debug info from production.'
+        $solutionText['Login Interface'] = 'Login interface detected. Restrict admin pages; apply access control; add brute-force protection.'
+        $solutionText['Outdated JS Libraries'] = 'Outdated JavaScript libraries detected. Update libraries; check for known CVEs.'
+        $solutionText['Admin Pages'] = 'Admin pages exposed. Restrict access; apply IP-based access control; use VPN/whitelist.'
+        $solutionText['Server Misconfiguration'] = 'Server misconfiguration. Disable TRACE; add missing security headers; disable verbose error pages.'
     }
     $headerSolutionMap = @{
         'Strict-Transport-Security' = 'Security Header'
@@ -3449,6 +3663,7 @@ if($ExportHtmlPath){
         $checkHeader = ConvertTo-LocalizedText 'Denetim'
         $webSecStatusHeader = ConvertTo-LocalizedText 'Durum'
         $detailHeader = ConvertTo-LocalizedText 'Detay'
+        $solutionHeader = ConvertTo-LocalizedText 'Çözüm'
         $webSecTableRows = New-Object Text.StringBuilder
         foreach ($row in $webSecRows) {
             $rowCssClass = switch ($row.Status) {
@@ -3465,18 +3680,14 @@ if($ExportHtmlPath){
                 'Fail'   { 'badge-closed' }
                 default  { 'badge-drop' }
             }
-            [void]$webSecTableRows.Append("<tr class='$rowCssClass'><td>$($row.Port)</td><td>$(ConvertTo-HtmlSafe ([string]$row.Check))</td><td><span class='badge $rowBadgeClass'>$(ConvertTo-HtmlSafe ([string]$row.Status))</span></td><td>$(ConvertTo-HtmlSafe ([string]$row.Detail))</td></tr>`n")
+            $rowSolutionKey = if ($headerSolutionMap.ContainsKey([string]$row.Check)) { $headerSolutionMap[[string]$row.Check] } else { [string]$row.Check }
+            $rowSolutionText = ''
+            if ($solutionText.ContainsKey($rowSolutionKey)) { $rowSolutionText = $solutionText[$rowSolutionKey] }
+            $solutionCellHtml = if ($rowSolutionText) { ConvertTo-HtmlSafe $rowSolutionText } else { '—' }
+            [void]$webSecTableRows.Append("<tr class='$rowCssClass'><td>$($row.Port)</td><td>$(ConvertTo-HtmlSafe ([string]$row.Check))</td><td><span class='badge $rowBadgeClass'>$(ConvertTo-HtmlSafe ([string]$row.Status))</span></td><td>$(ConvertTo-HtmlSafe ([string]$row.Detail))</td><td>$solutionCellHtml</td></tr>`n")
         }
-        $webSecAdviceItems = New-Object Text.StringBuilder
-        foreach ($advice in $webSecAdvices) {
-            [void]$webSecAdviceItems.Append("<div class='advisor-item'>$(ConvertTo-HtmlSafe $advice)</div>")
-        }
-        if ($webSecAdviceItems.Length -eq 0) {
-            [void]$webSecAdviceItems.Append("<div class='advisor-item'>$(ConvertTo-LocalizedText 'Ek uyarı yok.')</div>")
-        }
-        $webSecAdviceTitle = ConvertTo-LocalizedText 'Çözüm Önerileri'
         $webSecSummaryHtml = ConvertTo-HtmlSafe $webSecSummaryText
-        $webSecSection = "<section class='websec-section'><h3>$webSecSectionTitle</h3><div class='websec-summary'>$webSecSummaryHtml</div><table><thead><tr><th>$portHeader</th><th>$checkHeader</th><th>$webSecStatusHeader</th><th>$detailHeader</th></tr></thead><tbody>$($webSecTableRows.ToString())</tbody></table><div class='advisor'><h3>$webSecAdviceTitle</h3>$($webSecAdviceItems.ToString())</div></section>"
+        $webSecSection = "<section class='websec-section'><h3>$webSecSectionTitle</h3><div class='websec-summary'>$webSecSummaryHtml</div><table><thead><tr><th>$portHeader</th><th>$checkHeader</th><th>$webSecStatusHeader</th><th>$detailHeader</th><th>$solutionHeader</th></tr></thead><tbody>$($webSecTableRows.ToString())</tbody></table></section>"
     }
     $notes = New-Object Text.StringBuilder
     foreach ($n in $AdvisorNotes) {
