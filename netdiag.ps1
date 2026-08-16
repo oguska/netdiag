@@ -94,6 +94,7 @@ $Script:EnglishTranslations = [ordered]@{
     'Çözüm Önerileri'='Solution Advice'
     'Port'='Port'
     'Denetim'='Check'
+    'Çözüm'='Solution'
     'Detay'='Detail'
     'HTML rapor kaydedilsin mi?'='Save HTML report?'
     'Yol'='Path'
@@ -3748,7 +3749,7 @@ if($ExportHtmlPath){
             }
             $rowSolutionKey = if ($headerSolutionMap.ContainsKey([string]$row.Check)) { $headerSolutionMap[[string]$row.Check] } else { [string]$row.Check }
             $rowSolutionText = ''
-            if ($solutionText.ContainsKey($rowSolutionKey)) { $rowSolutionText = $solutionText[$rowSolutionKey] }
+            if ($row.Status -ne 'Pass' -and $solutionText.ContainsKey($rowSolutionKey)) { $rowSolutionText = $solutionText[$rowSolutionKey] }
             $solutionCellHtml = if ($rowSolutionText) { ConvertTo-HtmlSafe $rowSolutionText } else { '—' }
             [void]$webSecTableRows.Append("<tr class='$rowCssClass'><td>$($row.Port)</td><td>$(ConvertTo-HtmlSafe ([string]$row.Check))</td><td><span class='badge $rowBadgeClass'>$(ConvertTo-HtmlSafe ([string]$row.Status))</span></td><td>$(ConvertTo-HtmlSafe ([string]$row.Detail))</td><td>$solutionCellHtml</td></tr>`n")
         }
