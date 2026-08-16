@@ -29,7 +29,8 @@ param(
     [ValidateRange(0,60000)][int]$JMeterThinkTimeMs = 0,
     [ValidateRange(1024,104857600)][int]$JMeterMaxResponseBytes = 10485760,
     [ValidateSet('GET','HEAD')][string]$JMeterHttpMethod = 'GET',
-    [ValidateSet('Auto','tr','en')][string]$Language = 'Auto'
+    [ValidateSet('Auto','tr','en')][string]$Language = 'Auto',
+    [switch]$GeoIp
 )
 
 # --- LANGUAGE DETECTION AND LOCALIZATION ---
@@ -312,6 +313,31 @@ $Script:EnglishTranslations = [ordered]@{
     'Desteklenen:'='Supported:'
     'Müzakere edilen ALPN:'='Negotiated ALPN:'
     'TLS ve HTTP protokol denetimi'='TLS and HTTP protocol check'
+    'Hedef ASN / Ağ Sağlayıcı'='Target ASN / Network Provider'
+    'Hedef Coğrafi Konum'='Target Geolocation'
+    'Hedef İSS / Organizasyon'='Target ISP / Organization'
+    'Yol Üzerindeki Ağlar (ASN)'='Networks on the Path (ASN)'
+    'DNSSEC Durumu'='DNSSEC Status'
+    'DNS-over-TLS (853) Durumu'='DNS-over-TLS (853) Status'
+    'DNS-over-HTTPS Durumu'='DNS-over-HTTPS Status'
+    'Çözümleyici Tutarlılığı (UDP/DoT/DoH)'='Resolver Consistency (UDP/DoT/DoH)'
+    'HTTPS Sertifika SAN Alanları'='HTTPS Certificate SAN Entries'
+    'SAN Hostname Eşleşmesi'='SAN Hostname Match'
+    'Sertifika Zinciri Geçerliliği'='Certificate Chain Validity'
+    'Sertifika Zinciri Durumları'='Certificate Chain Status'
+    'İptal (Revocation) Durumu'='Revocation Status'
+    'Sertifika İmza Algoritması'='Certificate Signature Algorithm'
+    'Sertifika Geçerlilik Penceresi'='Certificate Validity Window'
+    'Wi-Fi Ağ Adı (SSID)'='Wi-Fi Network Name (SSID)'
+    'Wi-Fi Sinyal Gücü'='Wi-Fi Signal Strength'
+    'Wi-Fi Kanalı'='Wi-Fi Channel'
+    'Wi-Fi Radyo Tipi'='Wi-Fi Radio Type'
+    'Wi-Fi Alış (RX) Hızı'='Wi-Fi Receive (RX) Rate'
+    'Wi-Fi Gönderim (TX) Hızı'='Wi-Fi Transmit (TX) Rate'
+    'Ağ Adaptörü Durumu'='Network Adapter Status'
+    'Adaptör Bağlantı Hızı'='Adapter Link Speed'
+    'Adaptör Medya Tipi'='Adapter Media Type'
+    'Adaptör Paket Hataları'='Adapter Packet Errors'
 }
 
 # ConvertTo-LocalizedText runs once per console status line and once per HTML row.
@@ -1438,6 +1464,278 @@ function Test-SecurityHeaderAudit {
     }
 }
 
+function Get-GeoIpInfo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]]$IPAddresses,
+        [ValidateRange(1,30)][int]$TimeoutSec = 6
+    )
+    try {
+        $body = @($IPAddresses | ForEach-Object {
+            @{ query = $_; fields = 'query,country,regionName,city,isp,org,as,asname' }
+        }) | ConvertTo-Json -Depth 4
+        $headers = @{ 'User-Agent' = 'NetDiag-PowerShell' }
+        $resp = Invoke-RestMethod -Uri 'http://ip-api.com/batch' -Method Post -Body $body `
+            -ContentType 'application/json' -Headers $headers -TimeoutSec $TimeoutSec -ErrorAction Stop
+        return @($resp)
+    } catch {
+        return @()
+    }
+}
+
+function Get-DnsSecurityStatus {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string[]]$LocalA,
+        [string[]]$CloudflareUdpA,
+        [ValidateRange(1,30)][int]$HttpTimeoutSec = 5
+    )
+
+    $dnss = 'Not DNSSEC signed'
+    try {
+        $dnssecResults = @(Resolve-DnsName $Name -Type A -DnssecOk -Server '1.1.1.1' -ErrorAction Stop)
+        $rrsig = @($dnssecResults | Where-Object { $_.Type -eq 'RRSIG' -or $_.QueryType -eq 'RRSIG' })
+        if ($rrsig.Count -gt 0) { $dnss = 'Signed (RRSIG validated via 1.1.1.1)' }
+    } catch {
+        if ($_.Exception.Message -match '(?i)server failure|servfail|failed|validation') {
+            $dnss = 'Validation failed (SERVFAIL from validating resolver)'
+        } else {
+            $dnss = 'Status unavailable'
+        }
+    }
+
+    $dotResults = New-Object 'System.Collections.Generic.List[string]'
+    $dotResolvers = @(
+        @{ Host = '1.1.1.1'; Sni = 'cloudflare-dns.com' },
+        @{ Host = '8.8.8.8'; Sni = 'dns.google' }
+    )
+    foreach ($dotResolver in $dotResolvers) {
+        $ok = $false
+        $elapsed = $null
+        $tc = $null
+        $ssl = $null
+        try {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $tc = New-Object Net.Sockets.TcpClient
+            $ar = $tc.BeginConnect($dotResolver.Host, 853, $null, $null)
+            if (-not $ar.AsyncWaitHandle.WaitOne(3500, $false)) { throw 'DoT connect timeout' }
+            $tc.EndConnect($ar)
+            $ssl = New-Object Net.Security.SslStream($tc.GetStream(), $false, {$true})
+            $ssl.ReadTimeout = 3500
+            $ssl.WriteTimeout = 3500
+            $ssl.AuthenticateAsClient($dotResolver.Sni)
+
+            $transactionId = Get-Random -Minimum 1 -Maximum 65535
+            $query = [Collections.Generic.List[byte]]::new()
+            $query.Add([byte]($transactionId -shr 8))
+            $query.Add([byte]($transactionId -band 255))
+            foreach ($value in @(0x01,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00)) { $query.Add([byte]$value) }
+            foreach ($label in $Name.Split('.')) {
+                $labelBytes = [Text.Encoding]::ASCII.GetBytes($label)
+                $query.Add([byte]$labelBytes.Length)
+                $query.AddRange($labelBytes)
+            }
+            foreach ($value in @(0x00,0x00,0x01,0x00,0x01)) { $query.Add([byte]$value) }
+            $message = $query.ToArray()
+            [byte[]]$length = @([byte]($message.Length -shr 8),[byte]($message.Length -band 255))
+            $ssl.Write($length, 0, 2)
+            $ssl.Write($message, 0, $message.Length)
+            $ssl.Flush()
+            $reply = Read-NetworkBytes -Stream $ssl -MaximumBytes 512
+            $sw.Stop()
+            $elapsed = [Math]::Round($sw.Elapsed.TotalMilliseconds)
+            $idMatches = $reply.Count -ge 6 -and
+                $reply[2] -eq ($transactionId -shr 8) -and
+                $reply[3] -eq ($transactionId -band 255)
+            $isResponse = $reply.Count -ge 6 -and (($reply[4] -band 0x80) -ne 0)
+            $ok = ($idMatches -and $isResponse)
+        } catch {
+            if ($sw) { $sw.Stop() }
+            $ok = $false
+        } finally {
+            if ($ssl) { try { $ssl.Dispose() } catch {} }
+            if ($tc) { try { $tc.Dispose() } catch {} }
+        }
+        if ($ok) { $dotResults.Add("$($dotResolver.Host):853 OK (${elapsed} ms)") }
+        else { $dotResults.Add("$($dotResolver.Host):853 FAIL") }
+    }
+
+    $dohResults = New-Object 'System.Collections.Generic.List[string]'
+    $dohAnswers = @()
+    $dohEndpoints = @(
+        @{ Label = 'cloudflare-dns.com'; Uri = "https://cloudflare-dns.com/dns-query?name=$Name&type=A" },
+        @{ Label = 'dns.google'; Uri = "https://dns.google/resolve?name=$Name&type=A" }
+    )
+    $oldSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        foreach ($ep in $dohEndpoints) {
+            try {
+                $sw = [Diagnostics.Stopwatch]::StartNew()
+                $json = Invoke-RestMethod -Uri $ep.Uri -Headers @{ Accept = 'application/dns-json' } `
+                    -TimeoutSec $HttpTimeoutSec -ErrorAction Stop
+                $sw.Stop()
+                if ($json.Status -eq 0) {
+                    $answers = @($json.Answer | Where-Object { $_.type -eq 1 } | Select-Object -ExpandProperty data)
+                    if ($ep.Label -like 'cloudflare*') { $dohAnswers = $answers }
+                    $dohResults.Add("$($ep.Label): OK ($([Math]::Round($sw.Elapsed.TotalMilliseconds)) ms)")
+                } else {
+                    $dohResults.Add("$($ep.Label): RCODE $($json.Status)")
+                }
+            } catch {
+                $dohResults.Add("$($ep.Label): FAIL")
+            }
+        }
+    } finally {
+        [Net.ServicePointManager]::SecurityProtocol = $oldSecurityProtocol
+    }
+
+    $distinctSets = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($set in @($LocalA, $CloudflareUdpA, $dohAnswers)) {
+        $clean = @($set | Where-Object { $_ } | Sort-Object -Unique)
+        if ($clean.Count -gt 0) { $distinctSets.Add($clean) }
+    }
+    $uniqueSets = New-Object 'System.Collections.Generic.List[object]'
+    $uniqueKeys = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($set in $distinctSets) {
+        $key = ($set -join ',')
+        if (-not $uniqueKeys.Contains($key)) { $uniqueKeys.Add($key); $uniqueSets.Add($set) }
+    }
+    if ($uniqueSets.Count -eq 0) { $consistency = 'No answer to compare' }
+    elseif ($uniqueSets.Count -eq 1) { $consistency = 'Consistent (all resolvers returned the same IP set)' }
+    else { $consistency = 'Differences detected between resolvers' }
+
+    return [pscustomobject]@{
+        DNSSEC = $dnss
+        DoT = ($dotResults -join '; ')
+        DoH = ($dohResults -join '; ')
+        Consistency = $consistency
+    }
+}
+
+function Test-CertificateChain {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+        [string]$ExpectedName,
+        [switch]$UseRevocation
+    )
+    $sanDns = New-Object 'System.Collections.Generic.List[string]'
+    $sanIps = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        foreach ($ext in $Certificate.Extensions) {
+            if ($ext.Oid.Value -eq '2.5.29.17') {
+                $formatted = $ext.Format($true)
+                foreach ($line in ($formatted -split "`r?`n")) {
+                    if ($line -match 'DNS Name=(.+?)\s*$') { $sanDns.Add($matches[1].Trim()) }
+                    elseif ($line -match 'IP Address=(.+?)\s*$') { $sanIps.Add($matches[1].Trim()) }
+                }
+            }
+        }
+    } catch {}
+    $sanText = New-Object 'System.Collections.Generic.List[string]'
+    if ($sanDns.Count -gt 0) { $sanText.Add('DNS: ' + ($sanDns -join ', ')) }
+    if ($sanIps.Count -gt 0) { $sanText.Add('IP: ' + ($sanIps -join ', ')) }
+    $san = if ($sanText.Count -gt 0) { $sanText -join '; ' } else { $Certificate.Subject }
+
+    $matched = $false
+    if ($ExpectedName) {
+        $parsed = $null
+        if ([Net.IPAddress]::TryParse($ExpectedName, [ref]$parsed)) {
+            $matched = $sanIps -contains $ExpectedName
+        } else {
+            $expected = $ExpectedName.TrimEnd('.').ToLowerInvariant()
+            foreach ($entry in $sanDns) {
+                $name = $entry.TrimEnd('.').ToLowerInvariant()
+                if ($name -eq $expected) { $matched = $true; break }
+                if ($name.StartsWith('*.') -and $expected.EndsWith($name.Substring(1))) { $matched = $true; break }
+            }
+        }
+    }
+
+    $chainValid = $false
+    $chainStatus = New-Object 'System.Collections.Generic.List[string]'
+    $revocation = 'N/A'
+    try {
+        $chain = New-Object Security.Cryptography.X509Certificates.X509Chain
+        $chain.ChainPolicy.RevocationMode = if ($UseRevocation) {
+            [Security.Cryptography.X509Certificates.X509RevocationMode]::Online
+        } else {
+            [Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+        }
+        $chain.ChainPolicy.RevocationFlag = [Security.Cryptography.X509Certificates.X509RevocationFlag]::ExcludeRoot
+        $chainValid = $chain.Build($Certificate)
+        $statusFlags = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($el in $chain.ChainElements) {
+            foreach ($st in $el.ChainElementStatus) {
+                if ($st.Status -ne [Security.Cryptography.X509Certificates.X509ChainStatusFlags]::NoError) {
+                    $statusFlags.Add($st.Status)
+                    $chainStatus.Add($st.Status.ToString())
+                }
+            }
+        }
+        $revoked = $statusFlags.Contains([Security.Cryptography.X509Certificates.X509ChainStatusFlags]::Revoked)
+        $unknown = $statusFlags.Contains([Security.Cryptography.X509Certificates.X509ChainStatusFlags]::RevocationStatusUnknown)
+        if ($revoked) { $revocation = 'Revoked' }
+        elseif ($unknown) { $revocation = 'Could not verify (revocation status unknown)' }
+        elseif ($UseRevocation) { $revocation = 'No revocation detected' }
+    } catch {
+        $chainValid = $false
+        $chainStatus.Add("Chain build error: $($_.Exception.Message)")
+    }
+
+    return [pscustomobject]@{
+        San = $san
+        SanMatch = $matched
+        ChainValid = $chainValid
+        ChainStatus = if ($chainStatus.Count -gt 0) { $chainStatus -join '; ' } else { 'OK' }
+        Revocation = $revocation
+    }
+}
+
+function Get-WifiInfo {
+    [CmdletBinding()]
+    param()
+    $result = [ordered]@{}
+    try {
+        $wlanRaw = & netsh wlan show interfaces 2>$null
+        if (-not $wlanRaw) { return $null }
+        $joined = $wlanRaw -join "`n"
+        if ($joined -match '(?im)^\s*(SSID|SSID Numarası)\s*:\s*(.+)\s*$') { $result.Ssid = $matches[2].Trim() }
+        if ($joined -match '(?im)^\s*(Signal|Sinyal)\s*:\s*(\d{1,3})\s*%') { $result.SignalPercent = $matches[2] }
+        if ($joined -match '(?im)^\s*(Radio type|Radyo türü)\s*:\s*(.+)\s*$') { $result.RadioType = $matches[2].Trim() }
+        if ($joined -match '(?im)^\s*(Channel|Kanal)\s*:\s*(\d+)') { $result.Channel = $matches[2] }
+        if ($joined -match '(?im)^\s*(Receive rate \(Mbps\)|Alma hızı \(Mbps\)|Alış hızı \(Mbps\))\s*:\s*(\d+)') { $result.RxMbps = $matches[2] }
+        if ($joined -match '(?im)^\s*(Transmit rate \(Mbps\)|Gönderme hızı \(Mbps\)|Gönderim hızı \(Mbps\))\s*:\s*(\d+)') { $result.TxMbps = $matches[2] }
+        if ($result.Count -eq 0) { return $null }
+        return [pscustomobject]$result
+    } catch {
+        return $null
+    }
+}
+
+function Get-AdapterHealth {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$InterfaceDescription
+    )
+    try {
+        $stats = Get-NetAdapterStatistics -ErrorAction Stop |
+            Where-Object { $_.InterfaceDescription -eq $InterfaceDescription } |
+            Select-Object -First 1
+        if (-not $stats) { return $null }
+        return [pscustomobject]@{
+            RxErrors = $stats.ReceivedPacketErrors
+            TxErrors = $stats.OutboundPacketErrors
+            RxDiscarded = $stats.ReceivedDiscardedPackets
+            TxDiscarded = $stats.OutboundDiscardedPackets
+        }
+    } catch {
+        return $null
+    }
+}
+
 function Test-ScriptUpdate {
     Write-Host "[*] $(ConvertTo-LocalizedText 'Güncellemeler kontrol ediliyor')..." -ForegroundColor Gray
     try {
@@ -1571,6 +1869,8 @@ try {
     }
     $ip = if ($ipObject) { $ipObject.IPAddress } else { 'Bilinmiyor' }
     $adapterName = if ($adapter) { $adapter.Name } else { 'Aktif adaptör belirlenemedi' }
+    $wifiInfo = Get-WifiInfo
+    $adapterHealth = if ($adapter) { Get-AdapterHealth -InterfaceDescription $adapter.InterfaceDescription } else { $null }
     $cpuLoad = $null
     $cpuLoadSource = $null
 
@@ -1637,7 +1937,10 @@ try {
     }
     $total=[Math]::Round($os.TotalVisibleMemorySize/1MB,1);$free=[Math]::Round($os.FreePhysicalMemory/1MB,1);$used=[Math]::Round($total-$free,1);$pct=if($total){[Math]::Round($used/$total*100)}else{0}
     $diskText=($disks|ForEach-Object{$size=[Math]::Round($_.Size/1GB,1);$df=[Math]::Round($_.FreeSpace/1GB,1);$dp=if($_.Size){[Math]::Round(($_.Size-$_.FreeSpace)/$_.Size*100)}else{0};"$($_.DeviceID) (Toplam ${size}GB, Boş ${df}GB, Doluluk %$dp)"})-join' | '
-    $ReportData.Env_User="$env:USERDOMAIN\$env:USERNAME";$ReportData.Env_ComputerName=$env:COMPUTERNAME;$ReportData.Env_OS=$os.Caption.Trim();$ReportData.Env_CPU="$($cpu.Name) ($cpuCurrentLabel %$cpuLoad)";$ReportData.Env_CPU_Source=$cpuLoadSource;$ReportData.Env_Memory="Toplam ${total}GB | Kullanılan ${used}GB (%$pct)";$ReportData.Env_Disk=$diskText;$ReportData.Env_LocalIP="$ip ($adapterName)"
+    $ReportData.Env_User="$env:USERDOMAIN\$env:USERNAME";$ReportData.Env_ComputerName=$env:COMPUTERNAME;$ReportData.Env_OS=$os.Caption.Trim();$ReportData.Env_CPU="$($cpu.Name) ($cpuCurrentLabel %$cpuLoad)";$ReportData.Env_CPU_Source=$cpuLoadSource;    $ReportData.Env_Memory="Toplam ${total}GB | Kullanılan ${used}GB (%$pct)";$ReportData.Env_Disk=$diskText;$ReportData.Env_LocalIP="$ip ($adapterName)"
+    $ReportData.Wifi_Ssid=if($wifiInfo){$wifiInfo.Ssid}else{'N/A'};$ReportData.Wifi_Signal_Percent=if($wifiInfo){$wifiInfo.SignalPercent}else{'N/A'};$ReportData.Wifi_Channel=if($wifiInfo){$wifiInfo.Channel}else{'N/A'};$ReportData.Wifi_Radio_Type=if($wifiInfo){$wifiInfo.RadioType}else{'N/A'};$ReportData.Wifi_Rx_Mbps=if($wifiInfo){$wifiInfo.RxMbps}else{'N/A'};$ReportData.Wifi_Tx_Mbps=if($wifiInfo){$wifiInfo.TxMbps}else{'N/A'}
+    $ReportData.Adapter_Status=if($adapter){$adapter.Status}else{'N/A'};$ReportData.Adapter_Link_Speed=if($adapter){$adapter.LinkSpeed}else{'N/A'};$ReportData.Adapter_Media=if($adapter){$adapter.MediaType}else{'N/A'};$ReportData.Adapter_Packet_Errors=if($adapterHealth){"RX $($adapterHealth.RxErrors) / TX $($adapterHealth.TxErrors) errors; RX $($adapterHealth.RxDiscarded) / TX $($adapterHealth.TxDiscarded) discarded"}else{'N/A'}
+    if($wifiInfo -and $wifiInfo.Ssid){Write-Status WIFI "$($wifiInfo.Ssid) | Sinyal %$($wifiInfo.SignalPercent) | Kanal $($wifiInfo.Channel) | $($wifiInfo.RadioType) | RX $($wifiInfo.RxMbps) Mbps / TX $($wifiInfo.TxMbps) Mbps" $(if([int]$wifiInfo.SignalPercent -ge 50){'Green'}else{'Yellow'})}
     Write-Status ENV "CPU %$cpuLoad ($cpuLoadSource) | RAM %$pct | IP $ip" $(if($cpuLoad-eq'N/A'){'Yellow'}else{'Green'})
 } catch {Write-Status ENV "Envanter kısmen alınamadı: $($_.Exception.Message)" Yellow}
 
@@ -1679,6 +1982,20 @@ try {
     if($isCDN){Write-Status CDN $cdnName Yellow;$AdvisorNotes.Add('[i] CDN/reverse proxy tespit edildi; görülen port ve gecikme değerleri origin sunucuyu temsil etmeyebilir.')}
     if(($ScanLevel -in @('Medium','Deep','JMeter')) -and $Target -ne $targetIP){try{$pub=@(Resolve-DnsName $Target -Server 8.8.8.8 -ErrorAction Stop|Where-Object IPAddress|Select-Object -ExpandProperty IPAddress -Unique);if($pub){$ReportData.Public_DNS_IP=$pub-join', ';if($targetIP -notin $pub){$AdvisorNotes.Add("[!] DNS MISMATCH: Yerel $targetIP, public $($pub-join', '). Split-DNS ihtimalini inceleyin.")}}}catch{}}
     try{$ptr=(Resolve-DnsName $targetIP -Type PTR -ErrorAction Stop).NameHost;if($ptr){$ReportData.Reverse_DNS=$ptr-join', '}}catch{}
+    if($Target -ne $targetIP -and $ScanLevel -in @('Medium','Deep','JMeter')){
+        $dnsSec=Get-DnsSecurityStatus -Name $Target -LocalA $ips -CloudflareUdpA $cloudflare -HttpTimeoutSec $HttpTimeoutSec
+        $ReportData.DNSSEC_Status=$dnsSec.DNSSEC;$ReportData.DNS_DoT_Status=$dnsSec.DoT;$ReportData.DNS_DoH_Status=$dnsSec.DoH;$ReportData.DNS_Resolver_Consistency=$dnsSec.Consistency
+        Write-Status DNSSEC $dnsSec.DNSSEC $(if($dnsSec.DNSSEC -like 'Signed*'){'Green'}elseif($dnsSec.DNSSEC -like 'Validation failed*'){'Red'}else{'Yellow'})
+        Write-Status DoT $dnsSec.DoT Green
+        Write-Status DoH $dnsSec.DoH Green
+        Write-Status 'DNS-CONSISTENCY' $dnsSec.Consistency $(if($dnsSec.Consistency -like 'Consistent*'){'Green'}else{'Yellow'})
+        if($dnsSec.Consistency -notlike 'Consistent*' -and $dnsSec.Consistency -ne 'No answer to compare'){
+            if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add("[!] $($dnsSec.Consistency); farklı DNS çözümleyicileri farklı IP seti döndürdü.")}else{$AdvisorNotes.Add("[!] $($dnsSec.Consistency); different DNS resolvers returned different IP sets.")}
+        }
+        if($dnsSec.DNSSEC -like 'Signed*'){
+            if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[i] Alan adı DNSSEC imzalı; kimlik doğrulama zinciri güçlendirilmiş.')}else{$AdvisorNotes.Add('[i] The domain is DNSSEC-signed; the authentication chain is strengthened.')}
+        }
+    }
 } catch {$ReportData.Local_DNS_IP='Çözümlenemedi';Write-Status DNS $_.Exception.Message Red;$AdvisorNotes.Add('[!] DNS çözümlenemedi; hedefe bağlı ağ testleri atlandı.')}
 
 $icmpAvailable=$false;$unloadedAvgRtt=$null;$maxWorkingMtu=$null
@@ -1925,6 +2242,31 @@ if($dnsOk-and($ScanLevel -in @('Medium','Deep','JMeter'))){
 }
 
 $jmeterP95Val=$null;$jmeterErrRateVal=$null;$appMetricsAvailable=$false
+$ReportData.GeoIP_Target_ASN='N/A';$ReportData.GeoIP_Target_Location='N/A';$ReportData.GeoIP_Target_ISP='N/A';$ReportData.GeoIP_Hop_ASN='N/A'
+if($GeoIp -and $targetIP){
+    $hopIps=@($RouteReportRows|Where-Object{$_.IP-match'^\d{1,3}(\.\d{1,3}){3}$'}|Select-Object -ExpandProperty IP|Select-Object -Unique)
+    $lookupIps=@($hopIps)+@($targetIP)|Select-Object -Unique
+    $geoResults=@(Get-GeoIpInfo -IPAddresses $lookupIps)
+    $geoMap=@{}
+    foreach($g in $geoResults){if($g.query){$geoMap[$g.query]=$g}}
+    if($geoMap.ContainsKey($targetIP) -and $geoMap[$targetIP].as){
+        $gt=$geoMap[$targetIP]
+        $ReportData.GeoIP_Target_ASN="$($gt.as) ($($gt.asname))"
+        $ReportData.GeoIP_Target_Location="$($gt.city), $($gt.regionName), $($gt.country)"
+        $ReportData.GeoIP_Target_ISP=$gt.isp
+        Write-Status GEOIP "Hedef: $($gt.as) ($($gt.asname)) | $($gt.city), $($gt.country) | ISP: $($gt.isp)" Green
+    } else {
+        Write-Status GEOIP 'Hedef GeoIP/ASN bilgisi alınamadı' Yellow
+    }
+    $hopAsnLines=New-Object 'System.Collections.Generic.List[string]'
+    foreach($row in $RouteReportRows){
+        if($row.IP-match'^\d{1,3}(\.\d{1,3}){3}$' -and $geoMap.ContainsKey($row.IP) -and $geoMap[$row.IP].as){
+            $hopAsnLines.Add("Hop$($row.Hop) $($row.IP): $($geoMap[$row.IP].as) ($($geoMap[$row.IP].asname))")
+        }
+    }
+    if($hopAsnLines.Count-gt 0){$ReportData.GeoIP_Hop_ASN=$hopAsnLines-join' | ';Write-Status GEOIP "Yol: $($ReportData.GeoIP_Hop_ASN)" Green}
+    if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[i] GeoIP/ASN zenginleştirme ip-api.com üzerinden yapıldı; IP adresleri yalnızca bu amaçla üçüncü taraf bir servise gönderildi.')}else{$AdvisorNotes.Add('[i] GeoIP/ASN enrichment was performed via ip-api.com; IP addresses were sent to a third-party service solely for this purpose.')}
+}
 $loadTestSkipped=$false
 $loadTestSkipReason=$null
 if($ScanLevel-eq'JMeter' -or $EnableLoadTest){
@@ -1996,9 +2338,27 @@ if($dnsOk -and $ScanLevel -eq 'Deep' -and ($Port -in @(80,443,8080,8443))){
     Write-LogHeader '6. WEB, SSL VE HTTP ANALİZİ'
     $protocol=if($Port -in @(443,8443)){'https'}else{'http'};$url="${protocol}://${Target}:${Port}/"
     $ReportData.TLS_Supported_Versions='N/A';$ReportData.TLS_Negotiated_Protocol='N/A';$ReportData.TLS_Negotiated_Cipher='N/A';$ReportData.HTTP_Version_ALPN='N/A';$ReportData.HTTP3_QUIC_Status='N/A';$ReportData.Security_Header_Score='N/A';$ReportData.Security_Headers='N/A'
+    $ReportData.HTTPS_Cert_SAN='N/A';$ReportData.HTTPS_Cert_SAN_Match='N/A';$ReportData.HTTPS_Cert_Chain='N/A';$ReportData.HTTPS_Cert_Chain_Status='N/A';$ReportData.HTTPS_Cert_Revocation='N/A';$ReportData.HTTPS_Cert_Signature='N/A';$ReportData.HTTPS_Cert_Valid='N/A'
     if($protocol -eq 'https' -and $targetTcpReachable){
-        $tc=$null;$ss=$null
+        $tc=$null;$ss=$null;$cert=$null
         try{$tc=New-Object Net.Sockets.TcpClient;$ar=$tc.BeginConnect($targetIP,$Port,$null,$null);if(-not $ar.AsyncWaitHandle.WaitOne($TcpTimeoutMs,$false)){throw 'SSL TCP timeout'};$tc.EndConnect($ar);$ss=New-Object Net.Security.SslStream($tc.GetStream(),$false,({$true}));$ss.ReadTimeout=$HttpTimeoutSec*1000;$ss.WriteTimeout=$HttpTimeoutSec*1000;$ss.AuthenticateAsClient($Target);$cert=New-Object Security.Cryptography.X509Certificates.X509Certificate2 $ss.RemoteCertificate;$days=[Math]::Floor(($cert.NotAfter-(Get-Date)).TotalDays);$ReportData.SSL_Subject=$cert.Subject;$ReportData.SSL_Issuer=$cert.Issuer;$ReportData.SSL_Days_Left="$days Gün";Write-Status SSL "$days gün kaldı" $(if($days-lt30){'Yellow'}else{'Green'})}catch{Write-Status SSL $_.Exception.Message Red}finally{if($ss){$ss.Dispose()};if($tc){$tc.Dispose()}}
+        if($cert){
+            $chainInfo=Test-CertificateChain -Certificate $cert -ExpectedName $Target -UseRevocation
+            $now=(Get-Date)
+            $ReportData.HTTPS_Cert_SAN=$chainInfo.San
+            $ReportData.HTTPS_Cert_SAN_Match=if($chainInfo.SanMatch){'Yes'}else{'No'}
+            $ReportData.HTTPS_Cert_Chain=if($chainInfo.ChainValid){'Valid'}else{'Invalid'}
+            $ReportData.HTTPS_Cert_Chain_Status=$chainInfo.ChainStatus
+            $ReportData.HTTPS_Cert_Revocation=$chainInfo.Revocation
+            $ReportData.HTTPS_Cert_Valid=if($cert.NotBefore -le $now -and $cert.NotAfter -ge $now){'Valid'}else{'Expired / Not yet valid'}
+            $sigName=if($cert.SignatureAlgorithm.FriendlyName){$cert.SignatureAlgorithm.FriendlyName}else{$cert.SignatureAlgorithm.Value}
+            $ReportData.HTTPS_Cert_Signature=$sigName
+            $certColor=if($chainInfo.ChainValid -and $chainInfo.SanMatch){'Green'}else{'Yellow'}
+            Write-Status CERT "SAN eşleşmesi: $($ReportData.HTTPS_Cert_SAN_Match) | Zincir: $($ReportData.HTTPS_Cert_Chain) | Revocation: $($chainInfo.Revocation) | İmza: $sigName" $certColor
+            if(-not $chainInfo.SanMatch){if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] Sertifika SAN alanı istenen hostname ile eşleşmiyor; bağlantı güveni sorgulanabilir.')}else{$AdvisorNotes.Add('[!] The certificate SAN does not match the requested hostname; connection trust may be questionable.')}}
+            if(-not $chainInfo.ChainValid){if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add("[!] Sertifika zinciri doğrulaması başarısız: $($chainInfo.ChainStatus)")}else{$AdvisorNotes.Add("[!] Certificate chain validation failed: $($chainInfo.ChainStatus)")}}
+            if($chainInfo.Revocation -eq 'Revoked'){if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] Sertifika iptal edilmiş (revoked) durumda.')}else{$AdvisorNotes.Add('[!] The certificate is revoked.')}}
+        }
 
         $tlsProbe=Test-TlsVersions -ComputerName $targetIP -Port $Port -TimeoutMs $TcpTimeoutMs
         if($tlsProbe.AcceptedVersions.Count -gt 0){
@@ -2192,7 +2552,12 @@ if($ExportHtmlPath){
         HTTP_Total_Time='Toplam HTTP Yanıt Süresi'; ICMP_Sent='Gönderilen ICMP Paketi'; ICMP_Received='Yanıtlanan ICMP Paketi'; ICMP_Loss='Hedef ICMP Yanıt Kaybı';
         Unloaded_Min_RTT='Hedef Minimum RTT'; Unloaded_Median_RTT='Hedef Medyan RTT'; Unloaded_p95_RTT='Hedef p95 RTT'; Unloaded_Max_RTT='Hedef Maksimum RTT'; Destination_RTT_StdDev='Hedef RTT Standart Sapması'; Destination_Mean_Jitter='Hedef Ortalama Jitter'; Destination_Peak_Jitter='Hedef Peak Jitter'; Destination_Smoothed_Variation='Hedef Yumuşatılmış RTT Değişimi';
         HTTPS_Certificate_Status='HTTPS Sertifika Durumu'; HTTPS_Certificate_NotBefore='HTTPS Sertifika Başlangıcı'; HTTPS_Certificate_NotAfter='HTTPS Sertifika Bitişi'; Effective_Load_Test_URL='Etkin Yük Testi URL''si'; Load_Test_Status='HTTP Yük Testi Durumu'; JMeter_Engine='HTTP Yük Test Motoru'; JMeter_Method='HTTP Metodu'; JMeter_Peak_Concurrency='Ölçülen En Yüksek Eşzamanlı İstek'; JMeter_RampUp='Ramp-up Süresi'; JMeter_Warmup_Requests='Warm-up İstek Sayısı'; JMeter_Successful_Requests='Başarılı HTTP İsteği'; JMeter_Failed_Requests='Başarısız HTTP İsteği'; JMeter_Test_Duration='Toplam Yük Testi Süresi'; JMeter_Avg_Header_Time='Ortalama Header / TTFB Süresi'; JMeter_p95_Header_Time='p95 Header / TTFB Süresi'; JMeter_Avg_Download_Time='Ortalama Response İndirme Süresi'; JMeter_Avg_Elapsed='Ortalama Toplam HTTP Süresi'; JMeter_Elapsed_StdDev='HTTP Süre Standart Sapması'; JMeter_p50_Elapsed='p50 Toplam HTTP Süresi'; JMeter_p75_Elapsed='p75 Toplam HTTP Süresi'; JMeter_p90_Elapsed='p90 Toplam HTTP Süresi'; JMeter_p95_Elapsed='p95 Toplam HTTP Süresi'; JMeter_p99_Elapsed='p99 Toplam HTTP Süresi'; JMeter_Status_Distribution='HTTP Durum Kodu Dağılımı'; JMeter_Error_Distribution='HTTP Hata Tipi Dağılımı'; JMeter_Total_Data='Toplam Alınan Response Verisi'; JMeter_Average_Response_Size='Ortalama Response Boyutu'; JMeter_Download_Throughput='Response Veri Aktarım Hızı';
-        TLS_Supported_Versions='Desteklenen TLS Sürümleri'; TLS_Negotiated_Protocol='Müzakere Edilen TLS Sürümü'; TLS_Negotiated_Cipher='Müzakere Edilen Şifreleme'; HTTP_Version_ALPN='HTTP Protokolü (ALPN)'; HTTP2_Status='HTTP/2 Durumu'; HTTP3_QUIC_Status='HTTP/3 (QUIC) Durumu'; Security_Header_Score='Güvenlik Başlığı Puanı'; Security_Headers='Güvenlik Başlığı Denetimi'
+        TLS_Supported_Versions='Desteklenen TLS Sürümleri'; TLS_Negotiated_Protocol='Müzakere Edilen TLS Sürümü'; TLS_Negotiated_Cipher='Müzakere Edilen Şifreleme'; HTTP_Version_ALPN='HTTP Protokolü (ALPN)'; HTTP2_Status='HTTP/2 Durumu'; HTTP3_QUIC_Status='HTTP/3 (QUIC) Durumu'; Security_Header_Score='Güvenlik Başlığı Puanı'; Security_Headers='Güvenlik Başlığı Denetimi';
+        GeoIP_Target_ASN='Hedef ASN / Ağ Sağlayıcı'; GeoIP_Target_Location='Hedef Coğrafi Konum'; GeoIP_Target_ISP='Hedef İSS / Organizasyon'; GeoIP_Hop_ASN='Yol Üzerindeki Ağlar (ASN)';
+        DNSSEC_Status='DNSSEC Durumu'; DNS_DoT_Status='DNS-over-TLS (853) Durumu'; DNS_DoH_Status='DNS-over-HTTPS Durumu'; DNS_Resolver_Consistency='Çözümleyici Tutarlılığı (UDP/DoT/DoH)';
+        HTTPS_Cert_SAN='HTTPS Sertifika SAN Alanları'; HTTPS_Cert_SAN_Match='SAN Hostname Eşleşmesi'; HTTPS_Cert_Chain='Sertifika Zinciri Geçerliliği'; HTTPS_Cert_Chain_Status='Sertifika Zinciri Durumları'; HTTPS_Cert_Revocation='İptal (Revocation) Durumu'; HTTPS_Cert_Signature='Sertifika İmza Algoritması'; HTTPS_Cert_Valid='Sertifika Geçerlilik Penceresi';
+        Wifi_Ssid='Wi-Fi Ağ Adı (SSID)'; Wifi_Signal_Percent='Wi-Fi Sinyal Gücü'; Wifi_Channel='Wi-Fi Kanalı'; Wifi_Radio_Type='Wi-Fi Radyo Tipi'; Wifi_Rx_Mbps='Wi-Fi Alış (RX) Hızı'; Wifi_Tx_Mbps='Wi-Fi Gönderim (TX) Hızı';
+        Adapter_Status='Ağ Adaptörü Durumu'; Adapter_Link_Speed='Adaptör Bağlantı Hızı'; Adapter_Media='Adaptör Medya Tipi'; Adapter_Packet_Errors='Adaptör Paket Hataları'
     }
     $rows = New-Object Text.StringBuilder
     foreach ($x in $ReportData.GetEnumerator()) {
