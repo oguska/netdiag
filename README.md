@@ -1,6 +1,8 @@
 # NetDiag
 
-NetDiag is an advanced PowerShell-based diagnostic framework for Windows. It combines DNS validation, ICMP and Path MTU testing, protocol-aware TCP and UDP service validation, hop-by-hop route analysis, endpoint jitter measurements, concurrent HTTP load testing, TLS certificate inspection, HTTP fallback handling, system inventory, automated cross-correlation, multilingual output, and enterprise-ready HTML reporting in a single script.
+**NetDiag - Network diagnostic, load test and inventory** (v2.0)
+
+NetDiag is an advanced PowerShell-based diagnostic framework for Windows. It combines DNS validation, ICMP and Path MTU testing, protocol-aware TCP and UDP service validation, hop-by-hop route analysis, endpoint jitter measurements, concurrent HTTP load testing (p50/p95/p99, TTFB percentiles, tail ratio, spread analysis), TLS certificate inspection, HTTP fallback handling, system inventory, **passive web attack-surface analysis with inline remediation**, automated cross-correlation, multilingual output (TR/EN), and enterprise-ready HTML reporting with interactive infographics in a single script.
 
 NetDiag is designed to help distinguish among:
 
@@ -12,6 +14,8 @@ NetDiag is designed to help distinguish among:
 - End-to-end latency, response loss, and jitter
 - TLS handshake, certificate validity, and HTTPS availability problems
 - HTTP response-time, throughput, and error-rate problems
+- **HTTP latency percentile analysis (p50/p90/p95/p99), TTFB breakdown, tail ratio diagnostics**
+- **Web attack-surface findings with Nginx/Apache/IIS remediation steps**
 - Possible server, application, database, or network bottlenecks
 - Transparent proxy, firewall interception, CDN, WAF, and reverse-proxy behavior
 
