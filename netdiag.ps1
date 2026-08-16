@@ -223,6 +223,12 @@ $Script:EnglishTranslations = [ordered]@{
     'İndirme Verimliliği'='Download Efficiency'
     'Kritik'='Critical'
     'saldırı yüzeyi ve sayfa analizi yapılıyor...'='attack-surface and page analysis in progress...'
+    'MX kaydı bulunamadı.'='No MX record found.'
+    'SPF kaydı bulunamadı.'='No SPF record found.'
+    'DMARC kaydı bulunamadı.'='No DMARC record found.'
+    'DKIM kaydı bulunamadı.'='No DKIM record found.'
+    'CAA kaydı bulunamadı.'='No CAA record found.'
+    'DNS sızıntı kaydı bulunamadı.'='No DNS exposure records found.'
     'Orta'='Moderate'
     'İyi'='Good'
     'Optimizasyon Önerileri'='Optimization Suggestions'
@@ -2812,7 +2818,9 @@ try {
                     if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add("[!] MX kayıtları harici posta sağlayıcılarını işaret ediyor: $extList")}else{$AdvisorNotes.Add("[!] MX records point to external mail providers: $extList")}
                 }
             } else {
-                $ReportData.DNS_MX_Records = 'None'
+                $ReportData.DNS_MX_Records = 'MX kaydı bulunamadı.'
+                $dnsExposure += [pscustomobject]@{ Type='MX'; Detail='MX kaydı bulunamadı.'; Risk='Info' }
+                Write-Status 'DNS-MX' 'MX kaydı bulunamadı.' Yellow
             }
         } catch { $ReportData.DNS_MX_Records = 'Query failed' }
 
@@ -2832,8 +2840,9 @@ try {
                     if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add("[!] SPF politikası: $msg")}else{$AdvisorNotes.Add("[!] SPF policy: $msg")}
                 }
             } else {
-                $ReportData.DNS_SPF_Record = 'Missing'
-                $dnsExposure += [pscustomobject]@{ Type='SPF'; Detail='SPF record missing'; Risk='Warn' }
+                $ReportData.DNS_SPF_Record = 'SPF kaydı bulunamadı.'
+                $dnsExposure += [pscustomobject]@{ Type='SPF'; Detail='SPF kaydı bulunamadı.'; Risk='Warn' }
+                Write-Status 'DNS-SPF' 'SPF kaydı bulunamadı.' Yellow
                 if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] SPF kaydı bulunamadı; e-posta sahteciliği riski.')}else{$AdvisorNotes.Add('[!] SPF record missing; email spoofing risk.')}
             }
         } catch { $ReportData.DNS_SPF_Record = 'Query failed' }
@@ -2854,8 +2863,9 @@ try {
                     if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add("[!] DMARC politikası: $msg")}else{$AdvisorNotes.Add("[!] DMARC policy: $msg")}
                 }
             } else {
-                $ReportData.DNS_DMARC_Record = 'Missing'
-                $dnsExposure += [pscustomobject]@{ Type='DMARC'; Detail='DMARC record missing'; Risk='Warn' }
+                $ReportData.DNS_DMARC_Record = 'DMARC kaydı bulunamadı.'
+                $dnsExposure += [pscustomobject]@{ Type='DMARC'; Detail='DMARC kaydı bulunamadı.'; Risk='Warn' }
+                Write-Status 'DNS-DMARC' 'DMARC kaydı bulunamadı.' Yellow
                 if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] DMARC kaydı bulunamadı; e-posta sahteciliği koruması yok.')}else{$AdvisorNotes.Add('[!] DMARC record missing; no email spoofing protection.')}
             }
         } catch { $ReportData.DNS_DMARC_Record = 'Query failed' }
@@ -2876,8 +2886,9 @@ try {
             } catch {}
         }
         if (-not $dkimFound) {
-            $ReportData.DNS_DKIM_Record = 'Not found (common selectors)'
-            $dnsExposure += [pscustomobject]@{ Type='DKIM'; Detail='No DKIM record found for common selectors'; Risk='Warn' }
+            $ReportData.DNS_DKIM_Record = 'DKIM kaydı bulunamadı.'
+            $dnsExposure += [pscustomobject]@{ Type='DKIM'; Detail='DKIM kaydı bulunamadı.'; Risk='Warn' }
+            Write-Status 'DNS-DKIM' 'DKIM kaydı bulunamadı.' Yellow
             if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] DKIM kaydı bulunamadı; e-posta imzalama yapılandırılmamış olabilir.')}else{$AdvisorNotes.Add('[!] DKIM record not found; email signing may not be configured.')}
         }
 
@@ -2888,7 +2899,9 @@ try {
                 $ReportData.DNS_CAA_Records = $caaRecords -join '; '
                 $dnsExposure += [pscustomobject]@{ Type='CAA'; Detail=$ReportData.DNS_CAA_Records; Risk='Info' }
             } else {
-                $ReportData.DNS_CAA_Records = 'Missing'
+                $ReportData.DNS_CAA_Records = 'CAA kaydı bulunamadı.'
+                $dnsExposure += [pscustomobject]@{ Type='CAA'; Detail='CAA kaydı bulunamadı.'; Risk='Info' }
+                Write-Status 'DNS-CAA' 'CAA kaydı bulunamadı.' Green
             }
         } catch { $ReportData.DNS_CAA_Records = 'Query failed' }
 
