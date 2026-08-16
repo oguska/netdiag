@@ -1700,6 +1700,29 @@ function Test-WebPageAnalyzer {
             return $probeNet
         }
 
+        $rawGetProbe = {
+            param([string]$rawPath, [hashtable]$extraHeaders, [int]$maximumBytes)
+            $probeTcp = New-Object Net.Sockets.TcpClient
+            try {
+                $connectResult = $probeTcp.BeginConnect($ComputerName, $Port, $null, $null)
+                if (-not $connectResult.AsyncWaitHandle.WaitOne(($TimeoutSec * 1000), $false)) { return '' }
+                $probeTcp.EndConnect($connectResult)
+                $probeNet = & $openProbeStream $ComputerName $probeTcp
+                if (-not $probeNet) { return '' }
+                try {
+                    $requestText = "GET $rawPath HTTP/1.1`r`nHost: ${ComputerName}:${Port}`r`nUser-Agent: NetDiag-WebSec/1.0`r`nConnection: close`r`n"
+                    foreach ($headerName in $extraHeaders.Keys) { $requestText += "${headerName}: $($extraHeaders[$headerName])`r`n" }
+                    $requestText += "`r`n"
+                    $requestBytes = [Text.Encoding]::ASCII.GetBytes($requestText)
+                    $probeNet.Write($requestBytes, 0, $requestBytes.Length)
+                    return [Text.Encoding]::ASCII.GetString((Read-NetworkBytes -Stream $probeNet -MaximumBytes $maximumBytes))
+                } finally {
+                    try { $probeNet.Dispose() } catch {}
+                }
+            } catch { return '' }
+            finally { try { $probeTcp.Close() } catch {} }
+        }
+
         $pageResponse = $null
         try { $pageResponse = Invoke-WebRequest -Uri $baseUrl -Method Get -Headers $probeHeaders -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop } catch { $pageResponse = $null }
         if (-not $pageResponse) { return @($items.ToArray()) }
@@ -1891,6 +1914,94 @@ function Test-WebPageAnalyzer {
             $items.Add([pscustomobject]@{ Check='CRLF Injection'; Status='Danger'; Detail='Injected CRLF header was returned by the server; HTTP response splitting is possible' })
         } else {
             $items.Add([pscustomobject]@{ Check='CRLF Injection'; Status='Pass'; Detail='No injected header observed in the response' })
+        }
+
+        $openRedirectFound = $null
+        foreach ($redirectParam in @('url','redirect','next','return','rurl','dest','destination','go')) {
+            if ($openRedirectFound) { break }
+            $openRedirectUrl = 'http://evil.example/netdiag-open-redirect'
+            $redirectResponse = & $rawGetProbe ("/?${redirectParam}=" + [Uri]::EscapeDataString($openRedirectUrl)) @{} 1536
+            if ($redirectResponse -match '^HTTP/\S+\s+30\d' -and $redirectResponse -match '(?im)^Location:\s*' + [regex]::Escape($openRedirectUrl)) { $openRedirectFound = $redirectParam; break }
+            if ($redirectResponse -match '(?i)(location\.href|location\.replace|document\.location|window\.location)\s*=\s*[''"][^''"]*' + [regex]::Escape($openRedirectUrl)) { $openRedirectFound = $redirectParam; break }
+        }
+        if ($openRedirectFound) {
+            $items.Add([pscustomobject]@{ Check='Open Redirect'; Status='Warn'; Detail="Parameter '$openRedirectFound' produced a redirect to an external URL; open-redirect (phishing) risk" })
+        } else {
+            $items.Add([pscustomobject]@{ Check='Open Redirect'; Status='Pass'; Detail='No external-URL redirect observed in common redirect parameters' })
+        }
+
+        $corsProbeOrigin = 'http://evil.example'
+        $corsRawResponse = & $rawGetProbe '/' @{ 'Origin' = $corsProbeOrigin } 2048
+        $corsAllowOrigin = ''
+        $corsAllowCredentials = ''
+        foreach ($corsLine in @($corsRawResponse -split "`r?`n")) {
+            if ($corsLine -match '(?i)^Access-Control-Allow-Origin:\s*([^\r\n]+)') { $corsAllowOrigin = $matches[1].Trim() }
+            if ($corsLine -match '(?i)^Access-Control-Allow-Credentials:\s*([^\r\n]+)') { $corsAllowCredentials = $matches[1].Trim() }
+        }
+        if ($corsAllowOrigin -eq $corsProbeOrigin) {
+            if ($corsAllowCredentials -match '^true$') {
+                $items.Add([pscustomobject]@{ Check='CORS'; Status='Danger'; Detail='Arbitrary Origin reflected in Access-Control-Allow-Origin together with Access-Control-Allow-Credentials: true; cross-origin credentialed data theft is possible' })
+            } else {
+                $items.Add([pscustomobject]@{ Check='CORS'; Status='Warn'; Detail='Access-Control-Allow-Origin reflects the request Origin header; any site could read same-origin responses' })
+            }
+        } elseif ($corsAllowOrigin -and $corsAllowOrigin -ne '*') {
+            $items.Add([pscustomobject]@{ Check='CORS'; Status='Pass'; Detail="CORS does not reflect an arbitrary Origin (Access-Control-Allow-Origin: $corsAllowOrigin)" })
+        } else {
+            $items.Add([pscustomobject]@{ Check='CORS'; Status='Pass'; Detail='No permissive CORS Allow-Origin reflection observed' })
+        }
+
+        $sensitivePathProbes = @(
+            @{ Url='/.git/HEAD'; Pattern='(?i)ref:\s*refs/heads' },
+            @{ Url='/.git/config'; Pattern='(?i)\[core\]' },
+            @{ Url='/.env'; Pattern='(?i)(secret|password|api[_-]?key|token|aws_)=' },
+            @{ Url='/WEB-INF/web.xml'; Pattern='(?i)(<web-app|servlet-class)' },
+            @{ Url='/server-status'; Pattern='(?i)apache\s+server\s+status' },
+            @{ Url='/.htaccess'; Pattern='(?i)(RewriteEngine|Deny\s+from|AllowOverride)' },
+            @{ Url='/.DS_Store'; Pattern='Bud1' }
+        )
+        $exposedFiles = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($sensitiveProbe in $sensitivePathProbes) {
+            if ($exposedFiles.Count -ge 3) { break }
+            $sensitiveResponse = & $rawGetProbe $sensitiveProbe.Url @{} 1536
+            if ($sensitiveResponse -match '^HTTP/\S+\s+200' -and $sensitiveResponse -match $sensitiveProbe.Pattern) { $exposedFiles.Add($sensitiveProbe.Url) }
+        }
+        if ($exposedFiles.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Sensitive File Exposure'; Status='Danger'; Detail=("Sensitive file(s) accessible over HTTP: " + ($exposedFiles -join '; ')) })
+        } else {
+            $items.Add([pscustomobject]@{ Check='Sensitive File Exposure'; Status='Pass'; Detail='No well-known sensitive files (.git, .env, WEB-INF, server-status, .htaccess) were exposed' })
+        }
+
+        $traversalFound = $null
+        foreach ($traversalPayload in @('/..%2f..%2f..%2f..%2fetc%2fpasswd','/..%2f..%2f..%2f..%2f..%2fetc%2fpasswd','/%2e%2e/%2e%2e/%2e%2e/etc/passwd')) {
+            $traversalResponse = & $rawGetProbe $traversalPayload @{} 1536
+            if ($traversalResponse -match '^HTTP/\S+\s+200' -and $traversalResponse -match '(?m)^root:[^:]*:0:0:|/etc/passwd') { $traversalFound = $traversalPayload; break }
+        }
+        if ($traversalFound) {
+            $items.Add([pscustomobject]@{ Check='Path Traversal'; Status='Danger'; Detail=("Encoded traversal probe returned /etc/passwd content (payload: $traversalFound); directory traversal is possible" ) })
+        } else {
+            $items.Add([pscustomobject]@{ Check='Path Traversal'; Status='Pass'; Detail='No file-system content returned for encoded traversal probes' })
+        }
+
+        if ($Protocol -eq 'https') {
+            $mixedContentMatches = @([regex]::Matches($bodyText, '(?i)\b(?:src|href)\s*=\s*[''"]http://[^''"]+'))
+            if ($mixedContentMatches.Count -gt 0) {
+                $sampleMixedUrls = @($mixedContentMatches | ForEach-Object { $_.Value } | Select-Object -First 3)
+                $items.Add([pscustomobject]@{ Check='Mixed Content'; Status='Warn'; Detail=("HTTPS page references $($mixedContentMatches.Count) http:// resource(s): " + ($sampleMixedUrls -join '; ')) })
+            } else {
+                $items.Add([pscustomobject]@{ Check='Mixed Content'; Status='Pass'; Detail='No http:// resource references found on the HTTPS page' })
+            }
+        }
+
+        $scriptTagMatches = @([regex]::Matches($bodyText, '(?i)<script\b[^>]*\bsrc\s*=\s*[''"]([^''"]+)[''"][^>]*>'))
+        $scriptsWithoutSri = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($scriptMatch in $scriptTagMatches) {
+            if ($scriptMatch.Value -notmatch '(?i)\bintegrity\s*=') { $scriptsWithoutSri.Add($scriptMatch.Groups[1].Value) }
+        }
+        if ($scriptTagMatches.Count -gt 0 -and $scriptsWithoutSri.Count -gt 0) {
+            $sampleScripts = @($scriptsWithoutSri | Select-Object -First 3)
+            $items.Add([pscustomobject]@{ Check='Subresource Integrity'; Status='Info'; Detail=("$($scriptsWithoutSri.Count) of $($scriptTagMatches.Count) external script(s) lack Subresource Integrity checks: " + ($sampleScripts -join '; ')) })
+        } elseif ($scriptTagMatches.Count -gt 0) {
+            $items.Add([pscustomobject]@{ Check='Subresource Integrity'; Status='Pass'; Detail='All external scripts include Subresource Integrity (integrity=) attributes' })
         }
 
         if ($Protocol -eq 'http') {
@@ -3031,6 +3142,12 @@ if ($dnsOk -and $ScanLevel -eq 'WebSec') {
         $solutionText['CRLF Injection'] = 'İstek parametrelerindeki CR/LF karakterleri nötrleştirilmeli; HTTP başlık değerlerinde satır sonu karakterlerine izin verilmemeli ve istek normalizasyonu yapılmalıdır.'
         $solutionText['CSRF'] = 'Durum değiştiren (POST) formlara CSRF token eklenmeli; çerezler SameSite=Lax/Strict ile işaretlenmeli ve Origin/Referer doğrulaması yapılmalıdır.'
         $solutionText['Man-in-the-Middle'] = 'Trafik HTTPS ile şifrelenmeli ve HSTS (Strict-Transport-Security) eklenmeli; HTTP trafiği 301 ile HTTPS üzerinden kalıcı olarak yönlendirilmelidir.'
+        $solutionText['Open Redirect'] = 'Açık yönlendirme riski; url/redirect/next gibi parametreler harici adreslere yönlendirme sağlıyor. Yönlendirmeler yalnızca aynı etki alanındaki bilinen hedeflere izin vermeli ve kullanıcı girdisi doğrulanmadan yönlendirme mantığında kullanılmamalıdır.'
+        $solutionText['CORS'] = 'CORS yapılandırması Access-Control-Allow-Origin içinde isteğin Origin başlığını yansıtıyor ve/veya Allow-Credentials etkin. Yalnızca güvenilen etki alanlarından oluşan bir beyaz liste kullanılmalı ve Allow-Credentials ile birlikte joker (asterisk) kullanılmamalıdır.'
+        $solutionText['Sensitive File Exposure'] = 'Hassas dosyalar (örn. .git, .env, WEB-INF, server-status) web üzerinden erişilebilir durumda. Bu yollara erişim engellenmeli ve dosyalar web kökü dışına taşınmalıdır.'
+        $solutionText['Path Traversal'] = 'Yol gezinme (path traversal) açığı; kodlanmış ../ değerleri dosya sistemi içeriğine erişim sağlıyor. Girdi normalizasyonu ve kök dizin kısıtlamaları (chroot/jail) uygulanmalı, kullanıcı girdisiyle dosya yolu oluşturulmamalıdır.'
+        $solutionText['Mixed Content'] = 'HTTPS sayfası http:// kaynaklarına referans veriyor; tarayıcılar bu kaynakları engeller veya güvensiz olarak işaretler. Tüm kaynaklar HTTPS üzerinden sunulmalıdır.'
+        $solutionText['Subresource Integrity'] = 'Harici script/stylesheet kaynaklarında Subresource Integrity (integrity=) kullanılmıyor. CDN kaynaklarına integrity özetleri eklenmelidir.'
     } else {
         $solutionText['TRACE Method'] = 'The TRACE method is enabled, creating a Cross-Site Tracing (XST) risk. Disable TRACE on the server (IIS: block TRACE in <verbs>; Apache: TraceEnable Off; Nginx: reject TRACE requests).'
         $solutionText['PUT'] = 'The PUT method is allowed, risking unauthorized content modification. Allow only the required methods (GET/HEAD/POST/OPTIONS).'
@@ -3050,6 +3167,12 @@ if ($dnsOk -and $ScanLevel -eq 'WebSec') {
         $solutionText['CRLF Injection'] = 'Neutralize CR/LF characters in request parameters; forbid line terminators in HTTP header values and normalize requests.'
         $solutionText['CSRF'] = 'Add CSRF tokens to state-changing (POST) forms; mark cookies SameSite=Lax/Strict and validate Origin/Referer.'
         $solutionText['Man-in-the-Middle'] = 'Encrypt traffic with HTTPS and add HSTS (Strict-Transport-Security); permanently redirect HTTP traffic to HTTPS with a 301.'
+        $solutionText['Open Redirect'] = 'Open-redirect risk: parameters such as url/redirect/next redirect to external addresses. Restrict redirects to known same-domain targets and never use unvalidated user input in redirect logic.'
+        $solutionText['CORS'] = 'The CORS configuration reflects the request Origin in Access-Control-Allow-Origin and/or enables Allow-Credentials. Restrict it to a whitelist of trusted origins and never combine Allow-Credentials with a wildcard.'
+        $solutionText['Sensitive File Exposure'] = 'Sensitive files (e.g. .git, .env, WEB-INF, server-status) are accessible over the web. Block access to these paths and keep the files out of the web root.'
+        $solutionText['Path Traversal'] = 'Path-traversal flaw: encoded ../ values reach file-system content. Apply input normalization and root-directory restrictions (chroot/jail); never build file paths from user input.'
+        $solutionText['Mixed Content'] = 'The HTTPS page references http:// resources; browsers block or flag them as insecure. Serve all resources over HTTPS.'
+        $solutionText['Subresource Integrity'] = 'External script/stylesheet resources lack Subresource Integrity (integrity=) attributes. Add integrity hashes for CDN-hosted resources.'
     }
     $headerSolutionMap = @{
         'Strict-Transport-Security' = 'Security Header'

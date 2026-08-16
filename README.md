@@ -448,6 +448,12 @@ Web security scan mode (level 5). Includes all Deep checks (inventory, DNS, ICMP
   - Reflected-XSS probing on URL parameters.
   - Host-header reflection and validation (host-header poisoning).
   - CRLF / HTTP response-splitting injection.
+  - Open-redirect probing (common redirect parameters with an external URL).
+  - CORS misconfiguration (Access-Control-Allow-Origin reflection with or without credentials).
+  - Sensitive-file exposure (.git, .env, WEB-INF, server-status, .htaccess, .DS_Store).
+  - Encoded path-traversal / local-file-inclusion probing.
+  - Mixed-content detection (http:// references on HTTPS pages).
+  - Subresource Integrity (integrity=) check on external scripts.
   - Man-in-the-middle assessment (plaintext HTTP versus TLS with HSTS).
 - Advisor notes with concrete remediation advice for each finding, plus a `Web Attack-Surface Summary` and `Web Attack-Surface Findings` section in the HTML report. Console findings are logged as `[WEBSEC-<port>-<check>]` entries.
 
@@ -805,7 +811,7 @@ This information is not legal advice. Organizations should separately evaluate o
 - Collapsed privacy and data-processing disclosure.
 - Official GDPR and KVKK informational links in the HTML disclosure.
 - A GeoIP/ASN paragraph in the collapsed HTML privacy notice that discloses the use of the third-party ip-api.com service (shown only when GeoIP/ASN enrichment actually ran; it also includes the same statement in the advisor notes).
-- New `WebSec` scan level (level 5) that runs all Deep checks plus the concurrent HTTP load test and a passive HTTP/HTTPS attack-surface analysis (methods/TRACE, banners, directory listing, cookie flags, per-port security headers, HTTP-to-HTTPS redirect) and a per-port dynamic page analysis (HTTP flood rate-limit evidence, Slowloris resistance, CSRF, SQL-injection probing, reflected XSS, host-header reflection, CRLF injection, Man-in-the-middle), with per-finding remediation advice in the advisor notes and dedicated report rows.
+- New `WebSec` scan level (level 5) that runs all Deep checks plus the concurrent HTTP load test and a passive HTTP/HTTPS attack-surface analysis (methods/TRACE, banners, directory listing, cookie flags, per-port security headers, HTTP-to-HTTPS redirect) and a per-port dynamic page analysis (HTTP flood rate-limit evidence, Slowloris resistance, CSRF, SQL-injection probing, reflected XSS, host-header reflection, CRLF injection, open-redirect probing, CORS misconfiguration, sensitive-file exposure, path-traversal probing, mixed-content detection, Subresource Integrity check, Man-in-the-middle), with per-finding remediation advice in the advisor notes and dedicated report rows.
 
 ### Changed
 
