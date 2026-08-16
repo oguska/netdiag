@@ -217,6 +217,20 @@ $Script:EnglishTranslations = [ordered]@{
     'Kuyruk Kritik (>3x)'='Tail Critical (>3x)'
     'TTFB Yayılımı'='TTFB Spread'
     'Gecikme Yayılım Analizi'='Latency Spread Analysis'
+    'Zamanlama Analizi'='Timing Analysis'
+    'TTFB Oranı'='TTFB Ratio'
+    'Yanıt Boyutu'='Response Size'
+    'İndirme Verimliliği'='Download Efficiency'
+    'Kritik'='Critical'
+    'Orta'='Moderate'
+    'İyi'='Good'
+    'Optimizasyon Önerileri'='Optimization Suggestions'
+    'Sunucu taraflı optimizasyon gerekli'='Server-side optimization needed'
+    'İçerik optimizasyonu gerekli'='Content optimization needed'
+    'Büyük yanıt boyutu'='Large response size'
+    'TTFB değişkenliği yüksek'='High TTFB variability'
+    'Kuyruk latency sorunu'='Tail latency problem'
+    'Zamanlama metrikleri sağlıklı görünüyor'='Timing metrics appear healthy'
     'Grafik oluşturmak için yeterli veri yok.'='Not enough data was available to generate the chart.'
     'Hop Katmanlı Rota, Gecikme ve Jitter Analizi'='Hop-by-Hop Route, Latency and Jitter Analysis'
     'Medyan'='Median'
@@ -3932,7 +3946,7 @@ if($ExportHtmlPath){
             [void]$infographicHtml.Append($errorHtml + $errorLegend + '</div>')
         }
 
-        # HTTP timing breakdown: header (TTFB) vs download
+        # HTTP timing breakdown: header (TTFB) vs download + optimization analysis
         $avgHeaderMs = 0.0; $avgDownloadMs = 0.0
         $headerTimeMatch = [regex]::Match([string]$ReportData.JMeter_Avg_Header_Time,'[0-9]+(?:[\.,][0-9]+)?')
         if ($headerTimeMatch.Success) {
@@ -3946,7 +3960,91 @@ if($ExportHtmlPath){
         if ($totalTimingMs -gt 0) {
             $headerPct = [Math]::Round(($avgHeaderMs / $totalTimingMs) * 100,1)
             $downloadPct = [Math]::Round(($avgDownloadMs / $totalTimingMs) * 100,1)
-            $timingHtml = "<div class='chart-panel'><div class='chart-title'>$httpTimingTitle</div><div class='stack-bar'><div class='stack-seg' style='background:#0078d4;width:$headerPct%'></div><div class='stack-seg' style='background:#00b7c3;width:$downloadPct%'></div></div><div class='legend-list'><div class='legend-item'><span class='legend-dot' style='background:#0078d4'></span>$(ConvertTo-LocalizedText 'Header / TTFB'): $([Math]::Round($avgHeaderMs,1)) ms ($headerPct%)</div><div class='legend-item'><span class='legend-dot' style='background:#00b7c3'></span>$(ConvertTo-LocalizedText 'İndirme'): $([Math]::Round($avgDownloadMs,1)) ms ($downloadPct%)</div></div></div>"
+            $timingHtml = "<div class='chart-panel'><div class='chart-title'>$httpTimingTitle</div><div class='stack-bar'><div class='stack-seg' style='background:#0078d4;width:$headerPct%'></div><div class='stack-seg' style='background:#00b7c3;width:$downloadPct%'></div></div><div class='legend-list'><div class='legend-item'><span class='legend-dot' style='background:#0078d4'></span>$(ConvertTo-LocalizedText 'Header / TTFB'): $([Math]::Round($avgHeaderMs,1)) ms ($headerPct%)</div><div class='legend-item'><span class='legend-dot' style='background:#00b7c3'></span>$(ConvertTo-LocalizedText 'İndirme'): $([Math]::Round($avgDownloadMs,1)) ms ($downloadPct%)</div></div>"
+
+            # TTFB ratio analysis
+            $ttfbRatioClass = if ($headerPct -gt 70) { 'badge-closed' } elseif ($headerPct -gt 50) { 'badge-warning' } else { 'badge-open' }
+            $ttfbRatioLabel = if ($headerPct -gt 70) { ConvertTo-LocalizedText 'Kritik' } elseif ($headerPct -gt 50) { ConvertTo-LocalizedText 'Orta' } else { ConvertTo-LocalizedText 'İyi' }
+            $timingHtml += "<div style='margin-top:12px;padding:10px 14px;background:#f8fafc;border:1px solid #e1e4e8;border-radius:8px'>"
+            $timingHtml += "<div style='font-weight:700;font-size:13px;color:#005a9e;margin-bottom:8px'>$(ConvertTo-LocalizedText 'Zamanlama Analizi')</div>"
+            $timingHtml += "<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px'>"
+            $timingHtml += "<div><span style='color:#5f6368;font-weight:600'>$(ConvertTo-LocalizedText 'TTFB Oranı'):</span> <span class='badge $ttfbRatioClass' style='font-size:11px'>$headerPct% - $ttfbRatioLabel</span></div>"
+            $timingHtml += "<div><span style='color:#5f6368;font-weight:600'>$(ConvertTo-LocalizedText 'Yanıt Boyutu'):</span> $avgBytes Byte</div>"
+
+            # Throughput efficiency
+            if ($avgDownloadMs -gt 0 -and $avgBytes -gt 0) {
+                $bytesPerMs = [Math]::Round($avgBytes / $avgDownloadMs, 1)
+                $throughputLabel = if ($bytesPerMs -gt 50) { ConvertTo-LocalizedText 'İyi' } elseif ($bytesPerMs -gt 10) { ConvertTo-LocalizedText 'Orta' } else { ConvertTo-LocalizedText 'Kritik' }
+                $throughputClass = if ($bytesPerMs -gt 50) { 'badge-open' } elseif ($bytesPerMs -gt 10) { 'badge-warning' } else { 'badge-closed' }
+                $timingHtml += "<div><span style='color:#5f6368;font-weight:600'>$(ConvertTo-LocalizedText 'İndirme Verimliliği'):</span> <span class='badge $throughputClass' style='font-size:11px'>$bytesPerMs Byte/ms - $throughputLabel</span></div>"
+            }
+
+            # TTFB p99 spread indicator
+            if ($null -ne $ttfbSpread -and $ttfbSpread -gt 0) {
+                $ttfbSpreadClass = if ($ttfbSpread -gt 200) { 'badge-closed' } elseif ($ttfbSpread -gt 100) { 'badge-warning' } else { 'badge-open' }
+                $ttfbSpreadLabel = if ($ttfbSpread -gt 200) { ConvertTo-LocalizedText 'Kritik' } elseif ($ttfbSpread -gt 100) { ConvertTo-LocalizedText 'Orta' } else { ConvertTo-LocalizedText 'İyi' }
+                $timingHtml += "<div><span style='color:#5f6368;font-weight:600'>$(ConvertTo-LocalizedText 'TTFB Yayılımı'):</span> <span class='badge $ttfbSpreadClass' style='font-size:11px'>$ttfbSpread ms - $ttfbSpreadLabel</span></div>"
+            }
+            $timingHtml += "</div>"
+
+            # Optimization suggestions
+            $isTr = ($Script:LanguageCode -eq 'tr')
+            $suggestions = @()
+            if ($headerPct -gt 70) {
+                $suggestions += if ($isTr) {
+                    "Sunucu taraflı optimizasyon gerekli: TTFB toplam sürenin %$headerPct'i oluşturuyor. CDN, önbellekleme veya veritabanı sorgusu optimizasyonu düşünün."
+                } else {
+                    "Server-side optimization needed: TTFB accounts for $headerPct% of total time. Consider CDN, caching, or database query optimization."
+                }
+            } elseif ($headerPct -gt 50) {
+                $suggestions += if ($isTr) {
+                    "TTFB yüksek: Sunucu işlem süresi içerik aktarımından uzun. Backend optimizasyonu veya caching katmanı ekleyin."
+                } else {
+                    "High TTFB: Server processing time exceeds content transfer. Add backend optimization or caching layer."
+                }
+            }
+            if ($downloadPct -gt 50) {
+                $suggestions += if ($isTr) {
+                    "İçerik optimizasyonu gerekli: Yanıt indirme süresi toplam sürenin %$downloadPct'sini oluşturuyor. gzip/brotli sıkıştırma, görüntü optimizasyonu veya CDN kullanın."
+                } else {
+                    "Content optimization needed: Download time accounts for $downloadPct% of total time. Use gzip/brotli compression, image optimization, or CDN."
+                }
+            }
+            if ($avgBytes -gt 500000) {
+                $kb = [Math]::Round($avgBytes/1024,1)
+                $suggestions += if ($isTr) {
+                    "Büyük yanıt boyutu: Ortalama $kb KB. Sıkıştırma, lazy loading veya varlık küçültme düşünün."
+                } else {
+                    "Large response size: Average $kb KB. Consider compression, lazy loading, or asset minification."
+                }
+            }
+            if ($null -ne $ttfbSpread -and $ttfbSpread -gt 200) {
+                $suggestions += if ($isTr) {
+                    "TTFB değişkenliği yüksek: p50-p99 farkı $ttfbSpread ms. Backend servislerde kuyruk, lock contention veya GC duraklamaları araştırın."
+                } else {
+                    "High TTFB variability: p50-p99 spread is $ttfbSpread ms. Investigate backend queuing, lock contention, or GC pauses."
+                }
+            }
+            if ($null -ne $tailRatio -and $tailRatio -ge 3) {
+                $suggestions += if ($isTr) {
+                    "Kuyruk latency sorunu: p99/p50 oranı ${tailRatio}x. Bağımlı servisler, bağlantı havuzu veya thread kapasitesi kontrol edin."
+                } else {
+                    "Tail latency problem: p99/p50 ratio is ${tailRatio}x. Check dependent services, connection pool, or thread capacity."
+                }
+            }
+            if ($suggestions.Count -eq 0) {
+                $suggestions += if ($isTr) {
+                    "Zamanlama metrikleri sağlıklı görünüyor. Mevcut yapılandırmayı koruyun."
+                } else {
+                    "Timing metrics appear healthy. Maintain current configuration."
+                }
+            }
+            $timingHtml += "<div style='margin-top:10px;padding:10px 14px;background:#fff8e1;border-left:3px solid #ffc107;border-radius:4px;font-size:12px'>"
+            $timingHtml += "<div style='font-weight:700;color:#856404;margin-bottom:6px'>$(ConvertTo-LocalizedText 'Optimizasyon Önerileri')</div>"
+            foreach ($s in $suggestions) {
+                $timingHtml += "<div style='margin:4px 0;color:#5f6368'>• $(ConvertTo-HtmlSafe $s)</div>"
+            }
+            $timingHtml += "</div></div>"
             [void]$infographicHtml.Append($timingHtml)
         }
     }
