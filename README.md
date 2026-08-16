@@ -840,6 +840,11 @@ This information is not legal advice. Organizations should separately evaluate o
 - Replaced blank HTTP latency and percentile values with `N/A` when no successful request sample exists.
 - Localized correlation output directly instead of relying only on post-processing translations.
 - Expanded localization for dynamic inventory, route, service, certificate, chart, and footer values.
+- Reworked JMeter HTTP load analysis to align with percentile monitoring best practices: added TTFB p50/p90/p99 percentiles, tail ratio (p99/p50), latency spread (p99-p50), min/max elapsed, and sample quality warnings for p99 reliability.
+- Redesigned console load-test output: TTFB and elapsed lines now show spread and tail ratio instead of average; new `[QUALITY]` line shows sample count with p95 recommendation for low-sample cases.
+- Added gap-based root-cause diagnostics: tail latency problem detection (ratio ≥3x), wide spread detection (>500ms), capacity saturation (p50+p99 both high), and sample quality appendix (<200 samples).
+- Enhanced infographic HTTP KPI cards with p50/p99 latency and tail ratio indicators.
+- Added latency spread infographic panel with p50→p95→p99 horizontal bar and color-coded tail health badge (healthy/moderate/critical).
 - Improved report overwrite behavior with temporary-file creation, byte-length verification, and explicit create/overwrite status.
 - Updated auto-restart behavior to continue in the current terminal host.
 

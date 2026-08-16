@@ -202,6 +202,16 @@ $Script:EnglishTranslations = [ordered]@{
     'HTTP p95'='HTTP p95'
     'Hata Oranı'='Error Rate'
     'Peak Eşzamanlılık'='Peak Concurrency'
+    'Yayılım'='Spread'
+    'Kuyruk Oranı'='Tail Ratio'
+    'Örnek Kalitesi'='Sample Quality'
+    'p50 Gecikmesi'='p50 Latency'
+    'p99 Gecikmesi'='p99 Latency'
+    'Kuyruk Sağlıklı (<2x)'='Tail Healthy (<2x)'
+    'Kuyruk Orta (2-3x)'='Tail Moderate (2-3x)'
+    'Kuyruk Kritik (>3x)'='Tail Critical (>3x)'
+    'TTFB Yayılımı'='TTFB Spread'
+    'Gecikme Yayılım Analizi'='Latency Spread Analysis'
     'Grafik oluşturmak için yeterli veri yok.'='Not enough data was available to generate the chart.'
     'Hop Katmanlı Rota, Gecikme ve Jitter Analizi'='Hop-by-Hop Route, Latency and Jitter Analysis'
     'Medyan'='Median'
@@ -3082,7 +3092,7 @@ if($dnsOk-and($ScanLevel -in @('Medium','Deep','JMeter','WebSec'))){
     }
 }
 
-$jmeterP95Val=$null;$jmeterErrRateVal=$null;$appMetricsAvailable=$false
+$jmeterP95Val=$null;$jmeterErrRateVal=$null;$appMetricsAvailable=$false;$jmeterP50Val=$null;$jmeterP99Val=$null;$jmeterTailRatio=$null;$jmeterSpreadVal=$null;$jmeterSamplesCount=0
 $ReportData.GeoIP_Target_ASN='N/A';$ReportData.GeoIP_Target_Location='N/A';$ReportData.GeoIP_Target_ISP='N/A';$ReportData.GeoIP_Hop_ASN='N/A'
 $geoIpNotice=$false
 if(-not $SkipGeoIp -and $targetIP){
@@ -3165,12 +3175,12 @@ public class NetDiagRunnerV2{
         $ReportData.Load_Test_Status = if($Script:LanguageCode-eq'tr'){'Tamamlandı'}else{'Completed'}
         $appMetricsAvailable=$true;$successful=@($results|Where-Object{$_.Success});$failed=@($results|Where-Object{-not $_.Success});$elapsed=@($successful|Select-Object -ExpandProperty ElapsedMs|Sort-Object);$headers=@($successful|Select-Object -ExpandProperty HeaderMs|Sort-Object);$downloads=@($successful|Select-Object -ExpandProperty DownloadMs|Sort-Object)
         $successCount=$successful.Count;$failCount=$failed.Count;$errorRate=[Math]::Round(($failCount/[double]$results.Count)*100,2);$duration=[Math]::Round($testWatch.Elapsed.TotalSeconds,3);$rps=if($duration-gt0){[Math]::Round($results.Count/$duration,2)}else{0}
-        if($elapsed.Count){$avgElapsed=[Math]::Round(($elapsed|Measure-Object -Average).Average,2);$stdElapsed=Get-PopulationStandardDeviation $elapsed;$p50=[Math]::Round((Get-Percentile $elapsed 50),2);$p75=[Math]::Round((Get-Percentile $elapsed 75),2);$p90=[Math]::Round((Get-Percentile $elapsed 90),2);$p95=[Math]::Round((Get-Percentile $elapsed 95),2);$p99=[Math]::Round((Get-Percentile $elapsed 99),2);$avgHeader=[Math]::Round(($headers|Measure-Object -Average).Average,2);$p95Header=[Math]::Round((Get-Percentile $headers 95),2);$avgDownload=[Math]::Round(($downloads|Measure-Object -Average).Average,2)}else{$avgElapsed=$stdElapsed=$p50=$p75=$p90=$p95=$p99=$avgHeader=$p95Header=$avgDownload=$null}
-        $displayAvgHeader=if($null-ne$avgHeader){$avgHeader}else{'N/A'};$displayP95Header=if($null-ne$p95Header){$p95Header}else{'N/A'};$displayAvgElapsed=if($null-ne$avgElapsed){$avgElapsed}else{'N/A'};$displayP50=if($null-ne$p50){$p50}else{'N/A'};$displayP90=if($null-ne$p90){$p90}else{'N/A'};$displayP95=if($null-ne$p95){$p95}else{'N/A'};$displayP99=if($null-ne$p99){$p99}else{'N/A'};
-        $jmeterP95Val=$p95;$jmeterErrRateVal=$errorRate;$totalBytes=($successful|Measure-Object Bytes -Sum).Sum;if($null -eq $totalBytes){$totalBytes=0};$avgBytes=if($successCount){[Math]::Round($totalBytes/[double]$successCount)}else{0};$mbps=if($duration-gt0){[Math]::Round((($totalBytes*8)/$duration)/1000000,3)}else{0}
+        if($elapsed.Count){$avgElapsed=[Math]::Round(($elapsed|Measure-Object -Average).Average,2);$stdElapsed=Get-PopulationStandardDeviation $elapsed;$p50=[Math]::Round((Get-Percentile $elapsed 50),2);$p75=[Math]::Round((Get-Percentile $elapsed 75),2);$p90=[Math]::Round((Get-Percentile $elapsed 90),2);$p95=[Math]::Round((Get-Percentile $elapsed 95),2);$p99=[Math]::Round((Get-Percentile $elapsed 99),2);$minElapsed=[Math]::Round($elapsed[0],2);$maxElapsed=[Math]::Round($elapsed[-1],2);$tailRatio=if($p50-gt0){[Math]::Round($p99/$p50,1)}else{$null};$spread=if($null-ne$tailRatio){[Math]::Round($p99-$p50,2)}else{$null};$avgHeader=[Math]::Round(($headers|Measure-Object -Average).Average,2);$p50Header=[Math]::Round((Get-Percentile $headers 50),2);$p90Header=[Math]::Round((Get-Percentile $headers 90),2);$p95Header=[Math]::Round((Get-Percentile $headers 95),2);$p99Header=[Math]::Round((Get-Percentile $headers 99),2);$ttfbSpread=if($null-ne$p50Header -and $null-ne$p99Header){[Math]::Round($p99Header-$p50Header,2)}else{$null};$avgDownload=[Math]::Round(($downloads|Measure-Object -Average).Average,2)}else{$avgElapsed=$stdElapsed=$p50=$p75=$p90=$p95=$p99=$minElapsed=$maxElapsed=$tailRatio=$spread=$avgHeader=$p50Header=$p90Header=$p95Header=$p99Header=$ttfbSpread=$avgDownload=$null}
+        $displayAvgHeader=if($null-ne$avgHeader){$avgHeader}else{'N/A'};$displayP50Header=if($null-ne$p50Header){$p50Header}else{'N/A'};$displayP90Header=if($null-ne$p90Header){$p90Header}else{'N/A'};$displayP95Header=if($null-ne$p95Header){$p95Header}else{'N/A'};$displayP99Header=if($null-ne$p99Header){$p99Header}else{'N/A'};$displayTtfbSpread=if($null-ne$ttfbSpread){"$ttfbSpread ms"}else{'N/A'};$displayAvgElapsed=if($null-ne$avgElapsed){$avgElapsed}else{'N/A'};$displayP50=if($null-ne$p50){$p50}else{'N/A'};$displayP90=if($null-ne$p90){$p90}else{'N/A'};$displayP95=if($null-ne$p95){$p95}else{'N/A'};$displayP99=if($null-ne$p99){$p99}else{'N/A'};$displayTailRatio=if($null-ne$tailRatio){"${tailRatio}x"}else{'N/A'};$displaySpread=if($null-ne$spread){"$spread ms"}else{'N/A'};$displayMinElapsed=if($null-ne$minElapsed){"$minElapsed ms"}else{'N/A'};$displayMaxElapsed=if($null-ne$maxElapsed){"$maxElapsed ms"}else{'N/A'};
+        $jmeterP95Val=$p95;$jmeterP50Val=$p50;$jmeterP99Val=$p99;$jmeterTailRatio=$tailRatio;$jmeterSpreadVal=$spread;$jmeterSamplesCount=$results.Count;$jmeterErrRateVal=$errorRate;$totalBytes=($successful|Measure-Object Bytes -Sum).Sum;if($null -eq $totalBytes){$totalBytes=0};$avgBytes=if($successCount){[Math]::Round($totalBytes/[double]$successCount)}else{0};$mbps=if($duration-gt0){[Math]::Round((($totalBytes*8)/$duration)/1000000,3)}else{0}
         $statusDist=(@($results|Group-Object StatusCode|Sort-Object Name|ForEach-Object{"HTTP $($_.Name): $($_.Count)"}))-join' | ';$errorDist=(@($failed|Group-Object ErrorType|Sort-Object Count -Descending|ForEach-Object{"$($_.Name): $($_.Count)"}))-join' | ';if(-not $errorDist){$errorDist='Hata yok'}
-        $ReportData.JMeter_Engine='NetDiag HTTP Load Engine v2';$ReportData.JMeter_Method=$JMeterHttpMethod;$ReportData.JMeter_Threads=$JMeterThreads;$ReportData.JMeter_Peak_Concurrency=$output.PeakConcurrency;$ReportData.JMeter_RampUp="$JMeterRampUpSeconds saniye";$ReportData.JMeter_Warmup_Requests=$JMeterWarmupRequests;$ReportData.JMeter_Total_Requests=$results.Count;$ReportData.JMeter_Successful_Requests=$successCount;$ReportData.JMeter_Failed_Requests=$failCount;$ReportData.JMeter_Test_Duration="$duration saniye";$ReportData.JMeter_Throughput_RPS="$rps req/sec";$ReportData.JMeter_Avg_Header_Time=if($null-ne$avgHeader){"$avgHeader ms"}else{'N/A'};$ReportData.JMeter_p95_Header_Time=if($null-ne$p95Header){"$p95Header ms"}else{'N/A'};$ReportData.JMeter_Avg_Download_Time=if($null-ne$avgDownload){"$avgDownload ms"}else{'N/A'};$ReportData.JMeter_Avg_Elapsed=if($null-ne$avgElapsed){"$avgElapsed ms"}else{'N/A'};$ReportData.JMeter_Elapsed_StdDev=if($null-ne$stdElapsed){"$stdElapsed ms"}else{'N/A'};$ReportData.JMeter_p50_Elapsed=if($null-ne$p50){"$p50 ms"}else{'N/A'};$ReportData.JMeter_p75_Elapsed=if($null-ne$p75){"$p75 ms"}else{'N/A'};$ReportData.JMeter_p90_Elapsed=if($null-ne$p90){"$p90 ms"}else{'N/A'};$ReportData.JMeter_p95_Elapsed=if($null-ne$p95){"$p95 ms"}else{'N/A'};$ReportData.JMeter_p99_Elapsed=if($null-ne$p99){"$p99 ms"}else{'N/A'};$ReportData.JMeter_Error_Rate="%$errorRate";$ReportData.JMeter_Status_Distribution=$statusDist;$ReportData.JMeter_Error_Distribution=$errorDist;$ReportData.JMeter_Total_Data="$([Math]::Round($totalBytes/1MB,3)) MB";$ReportData.JMeter_Average_Response_Size="$avgBytes Byte";$ReportData.JMeter_Download_Throughput="$mbps Mbps"
-        Write-Status LOAD "RPS $rps | Peak $($output.PeakConcurrency) | Başarılı $successCount | Hatalı $failCount | Hata %$errorRate" $(if($errorRate-gt5){'Red'}elseif($errorRate-gt0){'Yellow'}else{'Green'});Write-Status TTFB "Ort $displayAvgHeader ms | p95 $displayP95Header ms" $(if($p95Header-gt1000){'Yellow'}else{'Green'});Write-Status ELAPSED "Ort $displayAvgElapsed | p50 $displayP50 | p90 $displayP90 | p95 $displayP95 | p99 $displayP99 ms" $(if($p95-gt1000){'Yellow'}else{'Green'});Write-Status DATA "Toplam $([Math]::Round($totalBytes/1MB,3)) MB | Ort $avgBytes Byte | $mbps Mbps" Cyan
+        $ReportData.JMeter_Engine='NetDiag HTTP Load Engine v2';$ReportData.JMeter_Method=$JMeterHttpMethod;$ReportData.JMeter_Threads=$JMeterThreads;$ReportData.JMeter_Peak_Concurrency=$output.PeakConcurrency;$ReportData.JMeter_RampUp="$JMeterRampUpSeconds saniye";$ReportData.JMeter_Warmup_Requests=$JMeterWarmupRequests;$ReportData.JMeter_Total_Requests=$results.Count;$ReportData.JMeter_Successful_Requests=$successCount;$ReportData.JMeter_Failed_Requests=$failCount;$ReportData.JMeter_Test_Duration="$duration saniye";$ReportData.JMeter_Throughput_RPS="$rps req/sec";$ReportData.JMeter_Avg_Header_Time=if($null-ne$avgHeader){"$avgHeader ms"}else{'N/A'};$ReportData.JMeter_p95_Header_Time=if($null-ne$p95Header){"$p95Header ms"}else{'N/A'};$ReportData.JMeter_Avg_Download_Time=if($null-ne$avgDownload){"$avgDownload ms"}else{'N/A'};$ReportData.JMeter_Avg_Elapsed=if($null-ne$avgElapsed){"$avgElapsed ms"}else{'N/A'};$ReportData.JMeter_Elapsed_StdDev=if($null-ne$stdElapsed){"$stdElapsed ms"}else{'N/A'};$ReportData.JMeter_p50_Elapsed=if($null-ne$p50){"$p50 ms"}else{'N/A'};$ReportData.JMeter_p75_Elapsed=if($null-ne$p75){"$p75 ms"}else{'N/A'};$ReportData.JMeter_p90_Elapsed=if($null-ne$p90){"$p90 ms"}else{'N/A'};$ReportData.JMeter_p95_Elapsed=if($null-ne$p95){"$p95 ms"}else{'N/A'};$ReportData.JMeter_p99_Elapsed=if($null-ne$p99){"$p99 ms"}else{'N/A'};$ReportData.JMeter_Error_Rate="%$errorRate";$ReportData.JMeter_Status_Distribution=$statusDist;$ReportData.JMeter_Error_Distribution=$errorDist;$ReportData.JMeter_Total_Data="$([Math]::Round($totalBytes/1MB,3)) MB";$ReportData.JMeter_Average_Response_Size="$avgBytes Byte";        $ReportData.JMeter_Download_Throughput="$mbps Mbps";$ReportData.JMeter_TTFB_p50=if($null-ne$p50Header){"$p50Header ms"}else{'N/A'};$ReportData.JMeter_TTFB_p90=if($null-ne$p90Header){"$p90Header ms"}else{'N/A'};$ReportData.JMeter_TTFB_p99=if($null-ne$p99Header){"$p99Header ms"}else{'N/A'};$ReportData.JMeter_TTFB_Spread=if($null-ne$ttfbSpread){"$ttfbSpread ms"}else{'N/A'};$ReportData.JMeter_Tail_Ratio=if($null-ne$tailRatio){"${tailRatio}x"}else{'N/A'};$ReportData.JMeter_Spread_ms=if($null-ne$spread){"$spread ms"}else{'N/A'};$ReportData.JMeter_Min_Elapsed=if($null-ne$minElapsed){"$minElapsed ms"}else{'N/A'};$ReportData.JMeter_Max_Elapsed=if($null-ne$maxElapsed){"$maxElapsed ms"}else{'N/A'}
+        Write-Status LOAD "RPS $rps | Peak $($output.PeakConcurrency) | Başarılı $successCount | Hatalı $failCount | Hata %$errorRate" $(if($errorRate-gt5){'Red'}elseif($errorRate-gt0){'Yellow'}else{'Green'});Write-Status TTFB "p50 $displayP50Header | p95 $displayP95Header | p99 $displayP99Header | Yayılım $displayTtfbSpread" $(if($null-ne$p99Header -and $p99Header-gt1000){'Yellow'}else{'Green'});Write-Status ELAPSED "p50 $displayP50 | p95 $displayP95 | p99 $displayP99 | Yayılım $displaySpread | Kuyruk $displayTailRatio" $(if($null-ne$tailRatio -and $tailRatio-ge3){'Red'}elseif($null-ne$p95 -and $p95-gt1000){'Yellow'}else{'Green'});Write-Status QUALITY "$jmeterSamplesCount örnek | p99 $(if($jmeterSamplesCount-ge200){'güvenilir'}else{'düşük örnek - p95 tercih edin'})" $(if($jmeterSamplesCount-ge200){'Green'}else{'Yellow'});Write-Status DATA "Toplam $([Math]::Round($totalBytes/1MB,3)) MB | Ort $avgBytes Byte | $mbps Mbps" Cyan
     }
     }
 }
@@ -3444,11 +3454,46 @@ $targetJitterHigh = (
     $destinationPingMetrics.MeanJitter -ge 20
 )
 
+$tailLatencyProblem = (
+    $appMetricsAvailable -and
+    $null -ne $jmeterTailRatio -and
+    $jmeterTailRatio -ge 3
+)
+$wideSpread = (
+    $appMetricsAvailable -and
+    $null -ne $jmeterSpreadVal -and
+    $jmeterSpreadVal -gt 500
+)
+$capacitySaturation = (
+    $appMetricsAvailable -and
+    $null -ne $jmeterP50Val -and
+    $jmeterP50Val -gt 200 -and
+    $null -ne $jmeterP99Val -and
+    $jmeterP99Val -gt 1000
+)
+$lowSampleQuality = (
+    $appMetricsAvailable -and
+    $jmeterSamplesCount -gt 0 -and
+    $jmeterSamplesCount -lt 200
+)
+
 if ($Script:LanguageCode -eq 'tr') {
     [void]$analysis.AppendLine('<b>[Sistem Mimarisi ve Performans Değerlendirmesi]</b><br>')
 
     if ($allHttpRequestsFailed) {
         [void]$analysis.AppendLine("<b>UYGULAMA TESTİ TAMAMEN BAŞARISIZ</b><br>HTTP isteklerinin tamamı başarısız oldu. Başarılı örnek olmadığı için p95 hesaplanmadı. Hata dağılımı: $($ReportData.JMeter_Error_Distribution). Hedef servis, protokol, TLS, WAF ve uygulama yanıtı kontrol edilmelidir.")
+    }
+    elseif ($tailLatencyProblem) {
+        $spreadMs = if ($null -ne $jmeterSpreadVal) { "$jmeterSpreadVal ms" } else { 'N/A' }
+        [void]$analysis.AppendLine("<b>KUYRUK LATENCY PROBLEMI (Kuyruk Oranı ${tailRatio}x)</b><br>p50: $jmeterP50Val ms, p99: $jmeterP99Val ms, yayılım: $spreadMs. Kullanıcıların çoğunluğu hızlı yanıt alırken, %5'lik kesim çok daha yavaş. Backend servislerde kuyruk, lock contention veya GC duraklamaları araştırılmalıdır. p95 tercih edin, p99 tek başına yanıltıcı olabilir.")
+    }
+    elseif ($wideSpread) {
+        $tailLabel = if ($null -ne $jmeterTailRatio) { " (Kuyruk Oranı: ${tailRatio}x)" } else { '' }
+        [void]$analysis.AppendLine("<b>GENİŞ GECİKME YAYILIMI${tailLabel}</b><br>p50: $jmeterP50Val ms, p99: $jmeterP99Val ms, yayılım: $jmeterSpreadVal ms. Yanıt süreleri tutarsız; uygulama katmanında dalgalanma var. Hotspot analizi, thread contention veya depolama gecikmesi kaynakları incelenmelidir.")
+    }
+    elseif ($capacitySaturation) {
+        $ttfbLabel = if ($null -ne $jmeterP50Val) { " TTFB p50: $($displayP50Header) ms." } else { '' }
+        [void]$analysis.AppendLine("<b>KAPASİTE DOYUMU</b><br>p50 ($jmeterP50Val ms) ve p99 ($jmeterP99Val ms) ikisi de yüksek. Sunucu, CPU, RAM, bağlantı havuzu veya thread kapasitesi doymuş durumda.${ttfbLabel} Ölçekleme veya kaynak artırımı gereklidir.")
     }
     elseif ($appErrorsHigh) {
         [void]$analysis.AppendLine("<b>YÜKSEK UYGULAMA HATA ORANI</b><br>HTTP hata oranı %$jmeterErrRateVal. HTTP p95: $(if($null-ne$jmeterP95Val){"$jmeterP95Val ms"}else{'N/A'}). Hata dağılımı: $($ReportData.JMeter_Error_Distribution).")
@@ -3481,12 +3526,28 @@ if ($Script:LanguageCode -eq 'tr') {
     if ($null -ne $maxJitterVal -and $networkQualityAvailable -and $maxJitterVal -gt 20 -and $destinationPingMetrics.MeanJitter -lt 10) {
         [void]$analysis.AppendLine('<br><b>ARA HOP ICMP VARYASYONU</b><br>Bazı ara hoplarda yüksek ICMP yanıt değişkenliği görülmesine rağmen son hedef jitter değeri düşüktür. Ara hop değişkenliği uçtan uca trafik bozulması olarak doğrulanmamıştır.')
     }
+
+    if ($lowSampleQuality) {
+        [void]$analysis.AppendLine("<br><b>⚠ DÜŞÜK ÖRNEK KALİTESİ</b><br>Sadece $jmeterSamplesCount örnek toplandı. p99 güvenilirliği için en az 200 örnek gereklidir. p95 değeri tercih edilmelidir. Test süresini artırın veya eşzamanlı istek sayısını yükseltin.")
+    }
 }
 else {
     [void]$analysis.AppendLine('<b>[System Architecture and Performance Assessment]</b><br>')
 
     if ($allHttpRequestsFailed) {
         [void]$analysis.AppendLine("<b>APPLICATION TEST COMPLETELY FAILED</b><br>All HTTP requests failed. p95 was not calculated because there were no successful samples. Error distribution: $($ReportData.JMeter_Error_Distribution). Verify the target service, protocol, TLS, WAF, and application response.")
+    }
+    elseif ($tailLatencyProblem) {
+        $spreadMs = if ($null -ne $jmeterSpreadVal) { "$jmeterSpreadVal ms" } else { 'N/A' }
+        [void]$analysis.AppendLine("<b>TAIL LATENCY PROBLEM (Tail Ratio ${tailRatio}x)</b><br>p50: $jmeterP50Val ms, p99: $jmeterP99Val ms, spread: $spreadMs. Most users get fast responses, but the worst 5% are significantly slower. Investigate backend service queuing, lock contention, or GC pauses. Prefer p95 over p99; p99 alone can be misleading.")
+    }
+    elseif ($wideSpread) {
+        $tailLabel = if ($null -ne $jmeterTailRatio) { " (Tail Ratio: ${tailRatio}x)" } else { '' }
+        [void]$analysis.AppendLine("<b>WIDE LATENCY SPREAD${tailLabel}</b><br>p50: $jmeterP50Val ms, p99: $jmeterP99Val ms, spread: $jmeterSpreadVal ms. Response times are inconsistent; there is application-layer variance. Investigate hotspot analysis, thread contention, or storage latency sources.")
+    }
+    elseif ($capacitySaturation) {
+        $ttfbLabel = if ($null -ne $jmeterP50Val) { " TTFB p50: $($displayP50Header) ms." } else { '' }
+        [void]$analysis.AppendLine("<b>CAPACITY SATURATION</b><br>p50 ($jmeterP50Val ms) and p99 ($jmeterP99Val ms) are both high. Server CPU, RAM, connection pool, or thread capacity is saturated.${ttfbLabel} Scaling or resource increase is required.")
     }
     elseif ($appErrorsHigh) {
         [void]$analysis.AppendLine("<b>HIGH APPLICATION ERROR RATE</b><br>HTTP error rate is $jmeterErrRateVal%. HTTP p95: $(if($null-ne$jmeterP95Val){"$jmeterP95Val ms"}else{'N/A'}). Error distribution: $($ReportData.JMeter_Error_Distribution).")
@@ -3518,6 +3579,10 @@ else {
 
     if ($null -ne $maxJitterVal -and $networkQualityAvailable -and $maxJitterVal -gt 20 -and $destinationPingMetrics.MeanJitter -lt 10) {
         [void]$analysis.AppendLine('<br><b>INTERMEDIATE-HOP ICMP VARIATION</b><br>Some intermediate hops showed high ICMP response variation, while destination jitter remained low. The intermediate-hop variation was not confirmed as end-to-end traffic degradation.')
+    }
+
+    if ($lowSampleQuality) {
+        [void]$analysis.AppendLine("<br><b>⚠ LOW SAMPLE QUALITY</b><br>Only $jmeterSamplesCount samples collected. p99 reliability requires at least 200 samples. Prefer p95. Increase test duration or concurrent request count.")
     }
 }
 
@@ -3558,7 +3623,7 @@ if($ExportHtmlPath){
         SSL_Days_Left='SSL Kalan Geçerlilik Süresi'; HTTP_Code='HTTP Yanıt Kodu';
         HTTP_Total_Time='Toplam HTTP Yanıt Süresi'; ICMP_Sent='Gönderilen ICMP Paketi'; ICMP_Received='Yanıtlanan ICMP Paketi'; ICMP_Loss='Hedef ICMP Yanıt Kaybı';
         Unloaded_Min_RTT='Hedef Minimum RTT'; Unloaded_Median_RTT='Hedef Medyan RTT'; Unloaded_p95_RTT='Hedef p95 RTT'; Unloaded_Max_RTT='Hedef Maksimum RTT'; Destination_RTT_StdDev='Hedef RTT Standart Sapması'; Destination_Mean_Jitter='Hedef Ortalama Jitter'; Destination_Peak_Jitter='Hedef Peak Jitter'; Destination_Smoothed_Variation='Hedef Yumuşatılmış RTT Değişimi';
-        HTTPS_Certificate_Status='HTTPS Sertifika Durumu'; HTTPS_Certificate_NotBefore='HTTPS Sertifika Başlangıcı'; HTTPS_Certificate_NotAfter='HTTPS Sertifika Bitişi'; Effective_Load_Test_URL='Etkin Yük Testi URL''si'; Load_Test_Status='HTTP Yük Testi Durumu'; JMeter_Engine='HTTP Yük Test Motoru'; JMeter_Method='HTTP Metodu'; JMeter_Peak_Concurrency='Ölçülen En Yüksek Eşzamanlı İstek'; JMeter_RampUp='Ramp-up Süresi'; JMeter_Warmup_Requests='Warm-up İstek Sayısı'; JMeter_Successful_Requests='Başarılı HTTP İsteği'; JMeter_Failed_Requests='Başarısız HTTP İsteği'; JMeter_Test_Duration='Toplam Yük Testi Süresi'; JMeter_Avg_Header_Time='Ortalama Header / TTFB Süresi'; JMeter_p95_Header_Time='p95 Header / TTFB Süresi'; JMeter_Avg_Download_Time='Ortalama Response İndirme Süresi'; JMeter_Avg_Elapsed='Ortalama Toplam HTTP Süresi'; JMeter_Elapsed_StdDev='HTTP Süre Standart Sapması'; JMeter_p50_Elapsed='p50 Toplam HTTP Süresi'; JMeter_p75_Elapsed='p75 Toplam HTTP Süresi'; JMeter_p90_Elapsed='p90 Toplam HTTP Süresi'; JMeter_p95_Elapsed='p95 Toplam HTTP Süresi'; JMeter_p99_Elapsed='p99 Toplam HTTP Süresi'; JMeter_Status_Distribution='HTTP Durum Kodu Dağılımı'; JMeter_Error_Distribution='HTTP Hata Tipi Dağılımı'; JMeter_Total_Data='Toplam Alınan Response Verisi'; JMeter_Average_Response_Size='Ortalama Response Boyutu'; JMeter_Download_Throughput='Response Veri Aktarım Hızı';
+        HTTPS_Certificate_Status='HTTPS Sertifika Durumu'; HTTPS_Certificate_NotBefore='HTTPS Sertifika Başlangıcı'; HTTPS_Certificate_NotAfter='HTTPS Sertifika Bitişi'; Effective_Load_Test_URL='Etkin Yük Testi URL''si'; Load_Test_Status='HTTP Yük Testi Durumu'; JMeter_Engine='HTTP Yük Test Motoru'; JMeter_Method='HTTP Metodu'; JMeter_Peak_Concurrency='Ölçülen En Yüksek Eşzamanlı İstek'; JMeter_RampUp='Ramp-up Süresi'; JMeter_Warmup_Requests='Warm-up İstek Sayısı'; JMeter_Successful_Requests='Başarılı HTTP İsteği'; JMeter_Failed_Requests='Başarısız HTTP İsteği'; JMeter_Test_Duration='Toplam Yük Testi Süresi'; JMeter_Avg_Header_Time='Ortalama Header / TTFB Süresi'; JMeter_p95_Header_Time='p95 Header / TTFB Süresi';         JMeter_Avg_Download_Time='Ortalama Response İndirme Süresi'; JMeter_Avg_Elapsed='Ortalama Toplam HTTP Süresi'; JMeter_Elapsed_StdDev='HTTP Süre Standart Sapması'; JMeter_p50_Elapsed='p50 Toplam HTTP Süresi'; JMeter_p75_Elapsed='p75 Toplam HTTP Süresi'; JMeter_p90_Elapsed='p90 Toplam HTTP Süresi'; JMeter_p95_Elapsed='p95 Toplam HTTP Süresi'; JMeter_p99_Elapsed='p99 Toplam HTTP Süresi'; JMeter_TTFB_p50='p50 Header / TTFB Süresi'; JMeter_TTFB_p90='p90 Header / TTFB Süresi'; JMeter_TTFB_p99='p99 Header / TTFB Süresi'; JMeter_TTFB_Spread='TTFB Yayılımı'; JMeter_Tail_Ratio='Kuyruk Oranı (p99/p50)'; JMeter_Spread_ms='Gecikme Yayılımı (p99-p50)'; JMeter_Min_Elapsed='En Düşük HTTP Süresi'; JMeter_Max_Elapsed='En Yüksek HTTP Süresi'; JMeter_Status_Distribution='HTTP Durum Kodu Dağılımı'; JMeter_Error_Distribution='HTTP Hata Tipi Dağılımı'; JMeter_Total_Data='Toplam Alınan Response Verisi'; JMeter_Average_Response_Size='Ortalama Response Boyutu'; JMeter_Download_Throughput='Response Veri Aktarım Hızı';
         TLS_Supported_Versions='Desteklenen TLS Sürümleri'; TLS_Negotiated_Protocol='Müzakere Edilen TLS Sürümü'; TLS_Negotiated_Cipher='Müzakere Edilen Şifreleme'; HTTP_Version_ALPN='HTTP Protokolü (ALPN)'; HTTP2_Status='HTTP/2 Durumu'; HTTP3_QUIC_Status='HTTP/3 (QUIC) Durumu'; Security_Header_Score='Güvenlik Başlığı Puanı'; Security_Headers='Güvenlik Başlığı Denetimi';
         GeoIP_Target_ASN='Hedef ASN / Ağ Sağlayıcı'; GeoIP_Target_Location='Hedef Coğrafi Konum'; GeoIP_Target_ISP='Hedef İSS / Organizasyon'; GeoIP_Hop_ASN='Yol Üzerindeki Ağlar (ASN)';
         DNSSEC_Status='DNSSEC Durumu'; DNS_DoT_Status='DNS-over-TLS (853) Durumu'; DNS_DoH_Status='DNS-over-HTTPS Durumu'; DNS_Resolver_Consistency='Çözümleyici Tutarlılığı (UDP/DoT/DoH)';
@@ -3581,6 +3646,7 @@ if($ExportHtmlPath){
         'Effective_Load_Test_URL','Load_Test_Status','JMeter_Engine','JMeter_Method','JMeter_Peak_Concurrency','JMeter_RampUp','JMeter_Warmup_Requests',
         'JMeter_Successful_Requests','JMeter_Failed_Requests','JMeter_Test_Duration','JMeter_Avg_Header_Time','JMeter_p95_Header_Time','JMeter_Avg_Download_Time',
         'JMeter_Avg_Elapsed','JMeter_Elapsed_StdDev','JMeter_p50_Elapsed','JMeter_p75_Elapsed','JMeter_p90_Elapsed','JMeter_p95_Elapsed','JMeter_p99_Elapsed',
+        'JMeter_TTFB_p50','JMeter_TTFB_p90','JMeter_TTFB_p99','JMeter_TTFB_Spread','JMeter_Tail_Ratio','JMeter_Spread_ms','JMeter_Min_Elapsed','JMeter_Max_Elapsed',
         'JMeter_Status_Distribution','JMeter_Error_Distribution','JMeter_Total_Data','JMeter_Average_Response_Size','JMeter_Download_Throughput',
         'TLS_Supported_Versions','TLS_Negotiated_Protocol','TLS_Negotiated_Cipher','HTTP_Version_ALPN','HTTP2_Status','HTTP3_QUIC_Status',
         'Security_Header_Score','Security_Headers',
@@ -3752,14 +3818,20 @@ if($ExportHtmlPath){
     # HTTP KPI cards and success/failure donut
     if ($appMetricsAvailable -and $ReportData.Contains('JMeter_Total_Requests')) {
         $httpP95Display = if ($null -ne $jmeterP95Val) { "$jmeterP95Val ms" } else { 'N/A' }
+        $httpP50Display = if ($null -ne $jmeterP50Val) { "$jmeterP50Val ms" } else { 'N/A' }
+        $httpP99Display = if ($null -ne $jmeterP99Val) { "$jmeterP99Val ms" } else { 'N/A' }
         $throughputDisplay = if ($ReportData.JMeter_Throughput_RPS) { [string]$ReportData.JMeter_Throughput_RPS } else { 'N/A' }
         $errorRateDisplay = if ($null -ne $jmeterErrRateVal) { "$jmeterErrRateVal%" } else { 'N/A' }
         $peakDisplay = if ($ReportData.JMeter_Peak_Concurrency) { [string]$ReportData.JMeter_Peak_Concurrency } else { 'N/A' }
+        $tailDisplay = if ($null -ne $tailRatio) { "${tailRatio}x" } else { 'N/A' }
+        $tailColor = if ($null -ne $tailRatio -and $tailRatio -lt 2) { '#107c10' } elseif ($null -ne $tailRatio -and $tailRatio -lt 3) { '#ffaa44' } else { '#d13438' }
         $httpCards = @(
             @{ Label=(ConvertTo-LocalizedText 'İşlem Hızı'); Value=$throughputDisplay; Color='#107c10' },
             @{ Label=(ConvertTo-LocalizedText 'HTTP p95'); Value=$httpP95Display; Color='#5c2d91' },
             @{ Label=(ConvertTo-LocalizedText 'Hata Oranı'); Value=$errorRateDisplay; Color='#d13438' },
-            @{ Label=(ConvertTo-LocalizedText 'Peak Eşzamanlılık'); Value=$peakDisplay; Color='#00b7c3' }
+            @{ Label=(ConvertTo-LocalizedText 'Peak Eşzamanlılık'); Value=$peakDisplay; Color='#00b7c3' },
+            @{ Label=(ConvertTo-LocalizedText 'p50 Gecikmesi'); Value=$httpP50Display; Color='#2b88d8' },
+            @{ Label=(ConvertTo-LocalizedText 'p99 Gecikmesi'); Value=$httpP99Display; Color='#7719aa' }
         )
         [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$httpSummaryTitle</div><div class='dashboard-grid'>")
         foreach ($card in $httpCards) {
@@ -3773,6 +3845,19 @@ if($ExportHtmlPath){
         $successPercent = if ($totalRequestCount -gt 0) { [Math]::Round(($successfulRequestCount / $totalRequestCount) * 100,1) } else { 0 }
         $failedPercent = [Math]::Round(100 - $successPercent,1)
         [void]$infographicHtml.Append("<div class='donut-wrap'><div class='donut' style='background:conic-gradient(#107c10 0% $successPercent%,#d13438 $successPercent% 100%)'><div class='donut-center'>$successPercent%<br><span style='font-size:11px;font-weight:500'>$(ConvertTo-LocalizedText 'Başarılı İstekler')</span></div></div><div><div class='legend-item'><span class='legend-dot legend-success'></span>$(ConvertTo-LocalizedText 'Başarılı İstekler'): $successfulRequestCount ($successPercent%)</div><div class='legend-item'><span class='legend-dot legend-failed'></span>$(ConvertTo-LocalizedText 'Başarısız İstekler'): $failedRequestCount ($failedPercent%)</div></div></div></div>")
+
+        # Latency spread panel: p50 -> p95 -> p99 horizontal bar with health indicator
+        if ($null -ne $jmeterP50Val -and $null -ne $jmeterP99Val -and $jmeterP99Val -gt 0) {
+            $spreadTitle = ConvertTo-LocalizedText 'Gecikme Yayılım Analizi'
+            $p50Pct = if ($jmeterP99Val -gt 0) { [Math]::Round(($jmeterP50Val / $jmeterP99Val) * 100,1) } else { 50 }
+            $p95Pct = if ($jmeterP99Val -gt 0) { [Math]::Round(([double]$jmeterP95Val / $jmeterP99Val) * 100,1) } else { 95 }
+            $p95ValForSpread = [double]$jmeterP95Val
+            $tailHealth = if ($tailRatio -lt 2) { 'kuyruk-saglikli' } elseif ($tailRatio -lt 3) { 'kuyruk-orta' } else { 'kuyruk-kritik' }
+            $tailHealthText = if ($tailRatio -lt 2) { ConvertTo-LocalizedText 'Kuyruk Sağlıklı (<2x)' } elseif ($tailRatio -lt 3) { ConvertTo-LocalizedText 'Kuyruk Orta (2-3x)' } else { ConvertTo-LocalizedText 'Kuyruk Kritik (>3x)' }
+            $tailHealthColor = if ($tailRatio -lt 2) { '#107c10' } elseif ($tailRatio -lt 3) { '#ffaa44' } else { '#d13438' }
+            $sampleBadge = if ($jmeterSamplesCount -ge 200) { "<span style='color:#107c10;font-weight:600'>; $jmeterSamplesCount</span>" } else { "<span style='color:#d13438;font-weight:600'>; $jmeterSamplesCount</span>" }
+            [void]$infographicHtml.Append("<div class='chart-panel'><div class='chart-title'>$(ConvertTo-HtmlSafe $spreadTitle) $sampleBadge</div><div class='bar-row'><div class='bar-label'>p50</div><div class='bar-track'><div class='bar-fill bar-fill-good' style='width:$p50Pct%'></div></div><div class='bar-value'>$jmeterP50Val ms</div></div><div class='bar-row'><div class='bar-label'>p95</div><div class='bar-track'><div class='bar-fill bar-fill-fair' style='width:$p95Pct%'></div></div><div class='bar-value'>$p95ValForSpread ms</div></div><div class='bar-row'><div class='bar-label'>p99</div><div class='bar-track'><div class='bar-fill bar-fill-poor' style='width:100%'></div></div><div class='bar-value'>$jmeterP99Val ms</div></div><div style='margin-top:8px;text-align:center'><span class='badge badge-$tailHealth' style='display:inline-block;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600;background:$tailHealthColor;color:#fff'>$(ConvertTo-HtmlSafe $tailHealthText) ($tailDisplay)</span></div></div>")
+        }
 
         # HTTP percentile horizontal bars
         $percentileItems = @(
