@@ -2568,7 +2568,7 @@ function Test-ScriptUpdate {
 if ([string]::IsNullOrWhiteSpace($Target)) {
     Clear-Host
     Write-Host '=================================================================================================' -ForegroundColor Cyan
-    Write-Host "NetDiag - Network diagnostic, load test and inventory ($CurrentCommit)" -ForegroundColor Cyan
+    Write-Host "NetDiag v2.0 - Network diagnostic, load test and inventory ($CurrentCommit)" -ForegroundColor Cyan
     Write-Host (ConvertTo-LocalizedText 'Bu araç DNS, ICMP, MTU, TCP portları, rota/jitter ve isteğe bağlı HTTP yük testlerini çalıştırır.') -ForegroundColor DarkGray
     Write-Host '=================================================================================================' -ForegroundColor Cyan
     Test-ScriptUpdate
