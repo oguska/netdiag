@@ -2869,7 +2869,7 @@ try {
                 $dkimRecord = $dkimRecords | Where-Object { $_ -like 'v=DKIM1*' } | Select-Object -First 1
                 if ($dkimRecord) {
                     $ReportData.DNS_DKIM_Record = "Selector: $sel - $dkimRecord"
-                    $dnsExposure += [pscustomobject]@{ Type='DKIM'; Detail="Selector $sel: $dkimRecord"; Risk='Info' }
+                    $dnsExposure += [pscustomobject]@{ Type='DKIM'; Detail="Selector ${sel}: $dkimRecord"; Risk='Info' }
                     $dkimFound = $true
                     break
                 }
