@@ -432,9 +432,18 @@ Web security scan mode (level 5). Includes all Deep checks (inventory, DNS, ICMP
 - Cookie `Secure`, `HttpOnly`, and `SameSite` flag checks.
 - Missing/weak security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy) per web port.
 - HTTP/80 to HTTPS redirect validation.
-- Advisor notes with concrete remediation advice for each finding, plus a `Web Attack-Surface Summary` and `Web Attack-Surface Findings` section in the HTML report.
+- Per-port dynamic page analysis:
+  - HTTP flood / rate-limiting evidence (rate-limit headers and WAF/CDN markers).
+  - Slowloris resistance (whether the server keeps partial-request connections open).
+  - CSRF-token presence on state-changing POST forms.
+  - SQL-injection error-signature probing on URL parameters.
+  - Reflected-XSS probing on URL parameters.
+  - Host-header reflection and validation (host-header poisoning).
+  - CRLF / HTTP response-splitting injection.
+  - Man-in-the-middle assessment (plaintext HTTP versus TLS with HSTS).
+- Advisor notes with concrete remediation advice for each finding, plus a `Web Attack-Surface Summary` and `Web Attack-Surface Findings` section in the HTML report. Console findings are logged as `[WEBSEC-<port>-<check>]` entries.
 
-The probes are read-only (GET/HEAD/OPTIONS/TRACE) and never modify server state. The concurrent load test remains exclusive to JMeter mode.
+The probes are read-only (GET/HEAD/OPTIONS/TRACE plus short partial HTTP requests) and never modify server state. The concurrent load test remains exclusive to JMeter mode.
 
 ---
 
@@ -787,10 +796,11 @@ This information is not legal advice. Organizations should separately evaluate o
 - Report footer with NetDiag version and GitHub project link.
 - Collapsed privacy and data-processing disclosure.
 - Official GDPR and KVKK informational links in the HTML disclosure.
-- New `WebSec` scan level (level 5) that runs all Deep checks plus a passive HTTP/HTTPS attack-surface analysis (methods/TRACE, banners, directory listing, cookie flags, per-port security headers, HTTP-to-HTTPS redirect) with per-finding remediation advice in the advisor notes and dedicated report rows.
+- New `WebSec` scan level (level 5) that runs all Deep checks plus a passive HTTP/HTTPS attack-surface analysis (methods/TRACE, banners, directory listing, cookie flags, per-port security headers, HTTP-to-HTTPS redirect) and a per-port dynamic page analysis (HTTP flood rate-limit evidence, Slowloris resistance, CSRF, SQL-injection probing, reflected XSS, host-header reflection, CRLF injection, Man-in-the-middle), with per-finding remediation advice in the advisor notes and dedicated report rows.
 
 ### Changed
 
+- Split the HTML report metric grid into three grouped sections (`General System Metrics`, `Network Metrics`, and `Application Metrics`) under the existing umbrella heading, with each group rendered in its own responsive card grid.
 - Extended Deep and JMeter scan matrices with common mail and database ports.
 - Reworked the TCP port scan to use an essential default set (web, mail, DNS, and administration ports) with an optional `-Ports` custom list and a wizard prompt for a custom list.
 - Added report rows and advisor entries for the scanned port list, internet-exposed database/RDP/SMB/Telnet/FTP warnings, SSH and HTTP/80 information, and SSL certificate expiry warnings.
