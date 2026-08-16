@@ -168,6 +168,13 @@ Possible UDP results include:
 - Localizes hidden-hop labels such as `Hidden/Unresponsive (*)`.
 - Gives greater diagnostic weight to destination measurements than to router ICMP behavior.
 
+### GeoIP and ASN enrichment
+
+- Enriches the target and route hop IP addresses with ASN, provider, ISP, and geolocation data via the ip-api.com batch API.
+- Reports target ASN/provider, geolocation, ISP/organization, and per-hop ASN for the discovered route.
+- Enabled by default on every scan; disable with `-SkipGeoIp`.
+- In interactive (wizard) mode, NetDiag asks whether GeoIP/ASN enrichment should run, defaulting to Yes, and discloses that IP addresses are sent to the third-party ip-api.com service.
+
 ### Native C# HTTP Load Engine v2
 
 - Runs inside PowerShell using an embedded C# engine.
@@ -590,6 +597,8 @@ The wizard explains:
 -JMeterMaxResponseBytes     Maximum accepted response-body size
 -JMeterHttpMethod           GET or HEAD
 -Language                   Auto, tr, or en
+-Ports                      Optional comma/space/semicolon-separated TCP port list
+-SkipGeoIp                  Disables GeoIP/ASN enrichment (enabled by default)
 ```
 
 ---
@@ -709,6 +718,7 @@ NetDiag may communicate with:
 - GitHub for update checks
 - Configured public DNS resolvers for DNS comparison
 - The selected target systems for diagnostic probes and load testing
+- The ip-api.com service for GeoIP/ASN enrichment (enabled by default; disable with `-SkipGeoIp`)
 
 NetDiag does not use cookies, advertising identifiers, usage analytics, or persistent user profiles. The report includes a collapsed privacy and data-processing notice with informational links to official EU GDPR and Turkish KVKK resources.
 
@@ -761,6 +771,7 @@ This information is not legal advice. Organizations should separately evaluate o
 - Extended Deep and JMeter scan matrices with common mail and database ports.
 - Reworked the TCP port scan to use an essential default set (web, mail, DNS, and administration ports) with an optional `-Ports` custom list and a wizard prompt for a custom list.
 - Added report rows and advisor entries for the scanned port list, internet-exposed database/RDP/SMB/Telnet/FTP warnings, SSH and HTTP/80 information, and SSL certificate expiry warnings.
+- Enabled GeoIP/ASN enrichment on every scan by default (previously opt-in with `-GeoIp`), with `-SkipGeoIp` to disable and a wizard confirmation prompt.
 - Renamed the extended matrix to clarify TCP and UDP service validation.
 - Reworked correlation priority so 100% HTTP failure cannot be reported as normal.
 - Reworked network-variation logic so elevated jitter with healthy application results is reported separately.

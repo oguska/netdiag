@@ -31,7 +31,8 @@ param(
     [ValidateSet('GET','HEAD')][string]$JMeterHttpMethod = 'GET',
     [ValidateSet('Auto','tr','en')][string]$Language = 'Auto',
     [switch]$GeoIp,
-    [string]$Ports
+    [string]$Ports,
+    [switch]$SkipGeoIp
 )
 
 # --- LANGUAGE DETECTION AND LOCALIZATION ---
@@ -342,6 +343,7 @@ $Script:EnglishTranslations = [ordered]@{
     'Taranan Portlar'='Scanned Ports'
     'Özel TCP port listesi virgülle ayrılmış. Boş bırakılırsa seviye varsayılanı kullanılır.'='Custom TCP port list, comma-separated. Leave blank to use the scan-level default.'
     'Geçersiz port listesi; varsayılanlara dönülüyor.'='Invalid port list; falling back to defaults.'
+    '    GeoIP/ASN zenginleştirme; hedef ve yol IP adreslerini üçüncü taraf ip-api.com servisine gönderir.'='    GeoIP/ASN enrichment sends the target and route IP addresses to the third-party ip-api.com service.'
 }
 
 # ConvertTo-LocalizedText runs once per console status line and once per HTML row.
@@ -1830,8 +1832,11 @@ if ([string]::IsNullOrWhiteSpace($Target)) {
         $v=Read-LocalizedHost ' -> Harici JTL/CSV yolu [opsiyonel]';if($v-and(Test-Path $v)){$JMeterCsvPath=$v}
     }
     $yesNoLabel = Get-LocalizedYesNoLabel
-    Write-Host (ConvertTo-LocalizedText '    Rapor; ölçümleri, korelasyon sonucunu, uyarıları ve hop tablosunu içerir.') -ForegroundColor DarkGray
     $defaultYesLabel = Get-LocalizedDefaultYesLabel
+    Write-Host (ConvertTo-LocalizedText '    GeoIP/ASN zenginleştirme; hedef ve yol IP adreslerini üçüncü taraf ip-api.com servisine gönderir.') -ForegroundColor DarkGray
+    $v = Read-LocalizedHost " -> GeoIP/ASN zenginleştirme? ($yesNoLabel) [$defaultYesLabel]"
+    if (-not (Test-LocalizedYesResponse -Answer $v -DefaultYes $true)) { $SkipGeoIp = $true }
+    Write-Host (ConvertTo-LocalizedText '    Rapor; ölçümleri, korelasyon sonucunu, uyarıları ve hop tablosunu içerir.') -ForegroundColor DarkGray
     $v = Read-LocalizedHost " -> HTML rapor kaydedilsin mi? ($yesNoLabel) [$defaultYesLabel]"
     if (Test-LocalizedYesResponse -Answer $v -DefaultYes $true) {
         $dir=if($PSScriptRoot){$PSScriptRoot}else{(Get-Location).Path}
@@ -2332,7 +2337,7 @@ if($dnsOk-and($ScanLevel -in @('Medium','Deep','JMeter'))){
 
 $jmeterP95Val=$null;$jmeterErrRateVal=$null;$appMetricsAvailable=$false
 $ReportData.GeoIP_Target_ASN='N/A';$ReportData.GeoIP_Target_Location='N/A';$ReportData.GeoIP_Target_ISP='N/A';$ReportData.GeoIP_Hop_ASN='N/A'
-if($GeoIp -and $targetIP){
+if(-not $SkipGeoIp -and $targetIP){
     $hopIps=@($RouteReportRows|Where-Object{$_.IP-match'^\d{1,3}(\.\d{1,3}){3}$'}|Select-Object -ExpandProperty IP|Select-Object -Unique)
     $lookupIps=@($hopIps)+@($targetIP)|Select-Object -Unique
     $geoResults=@(Get-GeoIpInfo -IPAddresses $lookupIps)
