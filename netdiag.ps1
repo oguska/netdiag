@@ -30,7 +30,8 @@ param(
     [ValidateRange(1024,104857600)][int]$JMeterMaxResponseBytes = 10485760,
     [ValidateSet('GET','HEAD')][string]$JMeterHttpMethod = 'GET',
     [ValidateSet('Auto','tr','en')][string]$Language = 'Auto',
-    [switch]$GeoIp
+    [switch]$GeoIp,
+    [string]$Ports
 )
 
 # --- LANGUAGE DETECTION AND LOCALIZATION ---
@@ -338,6 +339,9 @@ $Script:EnglishTranslations = [ordered]@{
     'Adaptör Bağlantı Hızı'='Adapter Link Speed'
     'Adaptör Medya Tipi'='Adapter Media Type'
     'Adaptör Paket Hataları'='Adapter Packet Errors'
+    'Taranan Portlar'='Scanned Ports'
+    'Özel TCP port listesi virgülle ayrılmış. Boş bırakılırsa seviye varsayılanı kullanılır.'='Custom TCP port list, comma-separated. Leave blank to use the scan-level default.'
+    'Geçersiz port listesi; varsayılanlara dönülüyor.'='Invalid port list; falling back to defaults.'
 }
 
 # ConvertTo-LocalizedText runs once per console status line and once per HTML row.
@@ -1796,6 +1800,8 @@ if ([string]::IsNullOrWhiteSpace($Target)) {
     Write-Host (ConvertTo-LocalizedText '    Hedef servisin TCP portu. HTTPS için 443, HTTP için 80.') -ForegroundColor DarkGray
     $v = Read-LocalizedHost ' -> TCP port [443]'
     if ($v) { if (-not [int]::TryParse($v,[ref]$Port) -or $Port -lt 1 -or $Port -gt 65535) { throw (ConvertTo-LocalizedText 'Geçersiz port.') } }
+    Write-Host (ConvertTo-LocalizedText '    Özel TCP port listesi virgülle ayrılmış. Boş bırakılırsa seviye varsayılanı kullanılır.') -ForegroundColor DarkGray
+    $Ports = Read-LocalizedHost ' -> Özel portlar [opsiyonel]'
     Write-Host "`n$(ConvertTo-LocalizedText 'Test seviyesini seçin:')" -ForegroundColor Yellow
     Write-Host " [1] Low     - $(ConvertTo-LocalizedText 'Hızlı erişilebilirlik: envanter, DNS, ICMP, MTU ve seçilen TCP portu.')" -ForegroundColor White
     Write-Host " [2] Medium  - $(ConvertTo-LocalizedText 'Standart ağ analizi: Low testlerine ek olarak temel port matrisi ve rota/jitter.')" -ForegroundColor White
@@ -2020,10 +2026,32 @@ if($dnsOk){
 $portResults=New-Object 'System.Collections.Generic.List[object]';$targetTcpReachable=$false
 if($dnsOk){
     Write-LogHeader '3. TCP/UDP SERVİS PORT MATRİSİ'
-    $ports=switch($ScanLevel){'Low'{@($Port)}'Medium'{@(80,443,$Port)}default{@(80,443,22,25,110,143,465,587,993,995,3389,53,445,1433,3306,5432,1521,$Port)}}
+    $customPortList = $null
+    if ($Ports) {
+        $customPortList = @($Ports -split '[,\s;]+' |
+            Where-Object { $_ -match '^\d+$' } |
+            ForEach-Object { [int]$_ } |
+            Where-Object { $_ -ge 1 -and $_ -le 65535 } |
+            Sort-Object -Unique)
+        if ($customPortList.Count -eq 0) {
+            Write-Status PORT (ConvertTo-LocalizedText 'Geçersiz port listesi; varsayılanlara dönülüyor.') Yellow
+            $customPortList = $null
+        }
+    }
+    $tcpPortList = if ($customPortList) {
+        @($customPortList) + $Port | Select-Object -Unique
+    } else {
+        switch ($ScanLevel) {
+            'Low'    { @($Port) }
+            'Medium' { @(80,443,$Port) }
+            default  { @(80,443,8080,8443,22,25,110,143,465,587,993,995,53,3389,445,23,21,$Port) }
+        }
+    }
+    $tcpPortList = @($tcpPortList | Select-Object -Unique)
+    $ReportData.Port_List = $tcpPortList -join ', '
     $badges=New-Object 'System.Collections.Generic.List[string]'
 
-    foreach ($cp in ($ports | Select-Object -Unique)) {
+    foreach ($cp in ($tcpPortList | Select-Object -Unique)) {
         $r = Test-TcpService -ComputerName $Target -Port $cp -TimeoutMs $TcpTimeoutMs
         $portResults.Add($r)
 
@@ -2082,6 +2110,66 @@ if($dnsOk){
     $http80Result = $portResults | Where-Object { $_.Port -eq 80 } | Select-Object -First 1
     $http80Verified = [bool]($http80Result -and $http80Result.ServiceVerified)
 
+    $openTcpPorts = @($portResults | Where-Object { $_.TcpSucceeded } | Select-Object -ExpandProperty Port)
+    $dbPorts = @($openTcpPorts | Where-Object { $_ -in @(1433,3306,5432,1521,6379,27017,9200) })
+    if ($dbPorts.Count -gt 0) {
+        $dbList = ($dbPorts | Sort-Object) -join ', '
+        if ($Script:LanguageCode -eq 'tr') {
+            $AdvisorNotes.Add("[!] Veritabanı servisleri internete açık: $dbList. Sürüm açıkları, sözlük saldırısı ve veri sızıntısı riski doğurur; erişim VPN/whitelist ile kısıtlanmalı veya servis kapatılmalıdır.")
+        } else {
+            $AdvisorNotes.Add("[!] Database services are exposed to the internet: $dbList. This risks version exploits, dictionary attacks, and data leakage; access should be restricted to VPN/allow-lists or the service should be disabled.")
+        }
+    }
+    if (3389 -in $openTcpPorts) {
+        if ($Script:LanguageCode -eq 'tr') {
+            $AdvisorNotes.Add('[!] RDP (3389) açık. İnternete açık RDP sözlük saldırılarının birincil hedefidir; VPN/RDP Gateway arkasına alınmalı, NLA zorunlu tutulmalı ve güçlü kimlik doğrulama uygulanmalıdır.')
+        } else {
+            $AdvisorNotes.Add('[!] RDP (3389) is open. Internet-exposed RDP is a primary brute-force target; place it behind a VPN/RDP Gateway, enforce NLA, and use strong authentication.')
+        }
+    }
+    if (445 -in $openTcpPorts) {
+        if ($Script:LanguageCode -eq 'tr') {
+            $AdvisorNotes.Add('[!] SMB (445) açık. İnternete açık SMB brute-force ve yanal hareket riski taşır; erişim kısıtlanmalı veya servis kapatılmalıdır.')
+        } else {
+            $AdvisorNotes.Add('[!] SMB (445) is open. Internet-exposed SMB carries brute-force and lateral-movement risk; restrict access or disable the service.')
+        }
+    }
+    if (23 -in $openTcpPorts) {
+        if ($Script:LanguageCode -eq 'tr') {
+            $AdvisorNotes.Add('[!] Telnet (23) açık; şifrelemesiz eski bir protokoldür. Kimlik bilgileri düz metin gönderilir; SSH ile değiştirilmelidir.')
+        } else {
+            $AdvisorNotes.Add('[!] Telnet (23) is open; it is a legacy unencrypted protocol. Credentials are sent in plaintext; it should be replaced with SSH.')
+        }
+    }
+    if (21 -in $openTcpPorts) {
+        if ($Script:LanguageCode -eq 'tr') {
+            $AdvisorNotes.Add('[!] FTP (21) açık; kimlik bilgileri ve veri şifrelemesiz aktarılır. SFTP/FTPS kullanılmalıdır.')
+        } else {
+            $AdvisorNotes.Add('[!] FTP (21) is open; credentials and data are transferred in plaintext. SFTP/FTPS should be used.')
+        }
+    }
+    if (22 -in $openTcpPorts) {
+        if ($Script:LanguageCode -eq 'tr') {
+            $AdvisorNotes.Add('[i] SSH (22) açık. Anahtar tabanlı kimlik doğrulama kullanıldığından emin olun; mümkünse parola girişi kapatılmalıdır.')
+        } else {
+            $AdvisorNotes.Add('[i] SSH (22) is open. Ensure key-based authentication is used; disable password login where possible.')
+        }
+    }
+    if (80 -in $openTcpPorts) {
+        if ($Script:LanguageCode -eq 'tr') {
+            $AdvisorNotes.Add('[i] HTTP/80 açık. HTTP trafiğinin HTTPS adresine yönlendirildiğinden emin olun; aksi halde trafik şifrelemesiz kalır.')
+        } else {
+            $AdvisorNotes.Add('[i] HTTP/80 is open. Ensure HTTP traffic redirects to HTTPS; otherwise traffic remains unencrypted.')
+        }
+    }
+    if ($customPortList) {
+        if ($Script:LanguageCode -eq 'tr') {
+            $AdvisorNotes.Add("[i] Tarama özel port listesiyle yapıldı (-Ports): $($customPortList -join ', ').")
+        } else {
+            $AdvisorNotes.Add("[i] Scan performed with a custom port list (-Ports): $($customPortList -join ', ').")
+        }
+    }
+
     if ($primary -and $Port -in @(443,8443)) {
         $ReportData.HTTPS_Certificate_Status = $primary.CertificateStatus
         if ($primary.CertificateNotBefore) {
@@ -2101,11 +2189,12 @@ if($dnsOk){
         }
     }
 
-    if ($ScanLevel -in @('Deep','JMeter')) {
+    $mailPortsScanned = @($tcpPortList | Where-Object { $_ -in @(25,110,143,465,587,993,995) })
+    if ($ScanLevel -in @('Deep','JMeter') -and $mailPortsScanned.Count -gt 0) {
         if ($Script:LanguageCode -eq 'tr') {
-            $AdvisorNotes.Add('[i] E-posta portları: SMTP 25, SMTP Submission 587, SMTPS 465, POP3 110, POP3S 995, IMAP 143 ve IMAPS 993 test edildi. STARTTLS portlarında ilk servis bannerı doğrulanır; kimlik doğrulama yapılmaz.')
+            $AdvisorNotes.Add("[i] E-posta portları test edildi: $($mailPortsScanned -join ', '). STARTTLS portlarında ilk servis bannerı doğrulanır; kimlik doğrulama yapılmaz.")
         } else {
-            $AdvisorNotes.Add('[i] Mail ports tested: SMTP 25, SMTP Submission 587, SMTPS 465, POP3 110, POP3S 995, IMAP 143, and IMAPS 993. STARTTLS ports validate the initial service banner; no authentication is attempted.')
+            $AdvisorNotes.Add("[i] Mail ports tested: $($mailPortsScanned -join ', '). STARTTLS ports validate the initial service banner; no authentication is attempted.")
         }
     }
 
@@ -2358,6 +2447,10 @@ if($dnsOk -and $ScanLevel -eq 'Deep' -and ($Port -in @(80,443,8080,8443))){
             if(-not $chainInfo.SanMatch){if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] Sertifika SAN alanı istenen hostname ile eşleşmiyor; bağlantı güveni sorgulanabilir.')}else{$AdvisorNotes.Add('[!] The certificate SAN does not match the requested hostname; connection trust may be questionable.')}}
             if(-not $chainInfo.ChainValid){if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add("[!] Sertifika zinciri doğrulaması başarısız: $($chainInfo.ChainStatus)")}else{$AdvisorNotes.Add("[!] Certificate chain validation failed: $($chainInfo.ChainStatus)")}}
             if($chainInfo.Revocation -eq 'Revoked'){if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] Sertifika iptal edilmiş (revoked) durumda.')}else{$AdvisorNotes.Add('[!] The certificate is revoked.')}}
+            if($null -ne $days){
+                if($days -lt 0){if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add('[!] SSL sertifikasının süresi dolmuş; derhal yenilenmelidir.')}else{$AdvisorNotes.Add('[!] The SSL certificate has expired; it must be renewed immediately.')}}
+                elseif($days -lt 30){if($Script:LanguageCode-eq'tr'){$AdvisorNotes.Add("[!] SSL sertifikası $days gün içinde sona erecek; yenileme planlanmalıdır.")}else{$AdvisorNotes.Add("[!] The SSL certificate expires in $days days; plan a renewal.")}}
+            }
         }
 
         $tlsProbe=Test-TlsVersions -ComputerName $targetIP -Port $Port -TimeoutMs $TcpTimeoutMs
@@ -2557,7 +2650,8 @@ if($ExportHtmlPath){
         DNSSEC_Status='DNSSEC Durumu'; DNS_DoT_Status='DNS-over-TLS (853) Durumu'; DNS_DoH_Status='DNS-over-HTTPS Durumu'; DNS_Resolver_Consistency='Çözümleyici Tutarlılığı (UDP/DoT/DoH)';
         HTTPS_Cert_SAN='HTTPS Sertifika SAN Alanları'; HTTPS_Cert_SAN_Match='SAN Hostname Eşleşmesi'; HTTPS_Cert_Chain='Sertifika Zinciri Geçerliliği'; HTTPS_Cert_Chain_Status='Sertifika Zinciri Durumları'; HTTPS_Cert_Revocation='İptal (Revocation) Durumu'; HTTPS_Cert_Signature='Sertifika İmza Algoritması'; HTTPS_Cert_Valid='Sertifika Geçerlilik Penceresi';
         Wifi_Ssid='Wi-Fi Ağ Adı (SSID)'; Wifi_Signal_Percent='Wi-Fi Sinyal Gücü'; Wifi_Channel='Wi-Fi Kanalı'; Wifi_Radio_Type='Wi-Fi Radyo Tipi'; Wifi_Rx_Mbps='Wi-Fi Alış (RX) Hızı'; Wifi_Tx_Mbps='Wi-Fi Gönderim (TX) Hızı';
-        Adapter_Status='Ağ Adaptörü Durumu'; Adapter_Link_Speed='Adaptör Bağlantı Hızı'; Adapter_Media='Adaptör Medya Tipi'; Adapter_Packet_Errors='Adaptör Paket Hataları'
+        Adapter_Status='Ağ Adaptörü Durumu'; Adapter_Link_Speed='Adaptör Bağlantı Hızı'; Adapter_Media='Adaptör Medya Tipi'; Adapter_Packet_Errors='Adaptör Paket Hataları';
+        Port_List='Taranan Portlar'
     }
     $rows = New-Object Text.StringBuilder
     foreach ($x in $ReportData.GetEnumerator()) {

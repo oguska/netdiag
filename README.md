@@ -91,16 +91,20 @@ Protocol-aware checks include:
 
 ### Extended TCP port matrix
 
-Deep and JMeter modes test the following common ports, plus the user-selected target port:
+By default, Deep and JMeter modes test the essential web, mail, DNS, and administration ports, plus the user-selected target port:
 
 #### Web and administration
 
 - `80` HTTP
 - `443` HTTPS / TLS
+- `8080` HTTP-alt
+- `8443` HTTPS-alt
 - `22` SSH
 - `3389` RDP
-- `53` DNS over TCP
 - `445` SMB
+- `53` DNS over TCP
+- `23` Telnet
+- `21` FTP
 
 #### Mail services
 
@@ -114,14 +118,11 @@ Deep and JMeter modes test the following common ports, plus the user-selected ta
 
 STARTTLS-capable plaintext ports validate the initial service greeting without submitting credentials or authenticating. Implicit-TLS ports perform a TLS handshake and certificate-date evaluation.
 
-#### Database services
+#### Custom port list
 
-- `1433` Microsoft SQL Server / TDS
-- `3306` MySQL / MariaDB
-- `5432` PostgreSQL
-- `1521` Oracle Database Listener
+The default port set can be overridden with `-Ports "80,443,22,3389"` (comma-, space-, or semicolon-separated; values must be between 1 and 65535). The user-selected target port is always appended. In interactive (wizard) mode NetDiag prompts for an optional custom port list. When a custom list is supplied, the report records the scanned ports and notes that the scan used the custom list.
 
-Database ports are not reported as verified database services based only on a TCP handshake. When no full protocol negotiation is performed, NetDiag reports `TCP CONNECTED, SERVICE NOT VERIFIED`.
+Database ports (such as `1433`, `3306`, `5432`, `1521`, `6379`, `27017`, `9200`) are not scanned by default. When they are present in a custom `-Ports` list and respond to a TCP handshake, NetDiag warns that internet-exposed database services were detected. Database ports are never reported as verified database services based only on a TCP handshake; without full protocol negotiation NetDiag reports `TCP CONNECTED, SERVICE NOT VERIFIED`.
 
 ### UDP service validation
 
@@ -758,6 +759,8 @@ This information is not legal advice. Organizations should separately evaluate o
 ### Changed
 
 - Extended Deep and JMeter scan matrices with common mail and database ports.
+- Reworked the TCP port scan to use an essential default set (web, mail, DNS, and administration ports) with an optional `-Ports` custom list and a wizard prompt for a custom list.
+- Added report rows and advisor entries for the scanned port list, internet-exposed database/RDP/SMB/Telnet/FTP warnings, SSH and HTTP/80 information, and SSL certificate expiry warnings.
 - Renamed the extended matrix to clarify TCP and UDP service validation.
 - Reworked correlation priority so 100% HTTP failure cannot be reported as normal.
 - Reworked network-variation logic so elevated jitter with healthy application results is reported separately.
