@@ -2251,7 +2251,7 @@ if ([string]::IsNullOrWhiteSpace($Target)) {
     Write-Host " [2] Medium  - $(ConvertTo-LocalizedText 'Standart ağ analizi: Low testlerine ek olarak temel port matrisi ve rota/jitter.')" -ForegroundColor White
     Write-Host " [3] Deep    - $(ConvertTo-LocalizedText 'Ayrıntılı teşhis: geniş port matrisi, rota/jitter, SSL ve HTTP analizi.')" -ForegroundColor White
     Write-Host " [4] JMeter  - $(ConvertTo-LocalizedText 'Yük testi: Deep ağ ölçümlerine ek olarak gelişmiş eşzamanlı HTTP testi.')" -ForegroundColor White
-    Write-Host " [5] WebSec  - $(ConvertTo-LocalizedText 'Web güvenliği: tüm Deep analizine ek olarak HTTP/HTTPS servisleri için yaygın web saldırı yüzeyi ve çözüm önerileri.')" -ForegroundColor White
+    Write-Host " [5] WebSec  - $(ConvertTo-LocalizedText 'Web güvenliği: tüm Deep analizine ek olarak eşzamanlı HTTP yük testi, HTTP/HTTPS servisleri için yaygın web saldırı yüzeyi ve çözüm önerileri.')" -ForegroundColor White
     do {$v=Read-LocalizedHost ' -> Seviye [3]';if(-not $v){$v='3'}}while($v -notin @('1','2','3','4','5'))
     $ScanLevel=@{'1'='Low';'2'='Medium';'3'='Deep';'4'='JMeter';'5'='WebSec'}[$v]
     if ($ScanLevel -ne 'Low') {
