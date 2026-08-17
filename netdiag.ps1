@@ -201,6 +201,14 @@ $Script:EnglishTranslations = [ordered]@{
     'TCP / UDP Portları'='TCP / UDP Ports'
     'Hedef Jitter Metrikleri'='Destination Jitter Metrics'
     'GeoIP / ASN'='GeoIP / ASN'
+    'E-posta Güvenliği'='Email Security'
+    'Sertifika Otoritesi'='Certificate Authority'
+    'Harici MX Sağlayıcıları'='External MX Providers'
+    'SPF Politika Analizi'='SPF Policy Analysis'
+    'DMARC Politika Analizi'='DMARC Policy Analysis'
+    'Bilgi'='Info'
+    'Uyarı'='Warning'
+    'Tehlike'='Danger'
     'Performans Bilgi Grafikleri'='Performance Infographics'
     'Ağ Kalitesi Özeti'='Network Quality Summary'
     'HTTP Yük Testi Özeti'='HTTP Load Test Summary'
@@ -2973,6 +2981,9 @@ try {
 
         # Store exposure summary
         $ReportData.DNS_Exposure_Summary = [string]::Join(' | ', @($dnsExposure | ForEach-Object { "$($_.Type): $($_.Risk)" }))
+        $ReportData.DNS_Exposure_Details = $dnsExposure
+        $ReportData.DNS_Exposure_Found = @($dnsExposureFound)
+        $ReportData.DNS_Exposure_Missing = @($dnsExposureMissing)
         if ($dnsExposureFound.Count -gt 0) {
             $foundSummary = [string]::Join(', ', @($dnsExposureFound))
             $missingSummary = if ($dnsExposureMissing.Count -gt 0) { [string]::Join(', ', @($dnsExposureMissing)) } else { '-' }
@@ -3973,33 +3984,66 @@ if($ExportHtmlPath){
     }
     $metricsGridHtml = "<div class='metric-group-title'>$generalSystemTitle</div>$sysGroupsHtml<div class='metric-group-title'>$networkMetricsTitle</div>$netGroupsHtml<div class='metric-group-title'>$applicationMetricsTitle</div>$appGroupsHtml"
     $dnsExposureSection = ''
-    if ($ReportData.Contains('DNS_Exposure_Summary')) {
+    if ($ReportData.Contains('DNS_Exposure_Details')) {
         $dnsExposureTitle = ConvertTo-LocalizedText 'DNS Sızıntı Özeti'
+        $emailSecTitle = ConvertTo-LocalizedText 'E-posta Güvenliği'
+        $caSecTitle = ConvertTo-LocalizedText 'Sertifika Otoritesi'
         $foundLabel = ConvertTo-LocalizedText 'Bulunan Kayıtlar'
         $missingLabel = ConvertTo-LocalizedText 'Eksik Kayıtlar'
         $foundStateLabel = ConvertTo-LocalizedText 'Bulundu'
         $missingStateLabel = ConvertTo-LocalizedText 'Eksik'
-        $dnsRecords = @(
-            @{ Key='DNS_MX_Records'; Label='MX Kayıtları'; MissingRegex='(?i)(^MX kaydı bulunamadı\.?$|^No MX record found\.?$|^Query failed$)' },
-            @{ Key='DNS_SPF_Record'; Label='SPF Kaydı'; MissingRegex='(?i)(^SPF kaydı bulunamadı\.?$|^No SPF record found\.?$|^Query failed$)' },
-            @{ Key='DNS_DMARC_Record'; Label='DMARC Kaydı'; MissingRegex='(?i)(^DMARC kaydı bulunamadı\.?$|^No DMARC record found\.?$|^Query failed$)' },
-            @{ Key='DNS_DKIM_Record'; Label='DKIM Kaydı'; MissingRegex='(?i)(^DKIM kaydı bulunamadı\.?$|^No DKIM record found\.?$|^Not found \(common selectors\)$|^Query failed$)' },
-            @{ Key='DNS_CAA_Records'; Label='CAA Kayıtları'; MissingRegex='(?i)(^CAA kaydı bulunamadı\.?$|^No CAA record found\.?$|^Query failed$)' }
-        )
-        $dnsRows = New-Object Text.StringBuilder
-        $foundDnsRecords = New-Object System.Collections.Generic.List[string]
-        $missingDnsRecords = New-Object System.Collections.Generic.List[string]
-        foreach ($dnsRecord in $dnsRecords) {
-            $recordValue = if ($ReportData.Contains($dnsRecord.Key)) { [string]$ReportData[$dnsRecord.Key] } else { '' }
-            $isMissing = [string]::IsNullOrWhiteSpace($recordValue) -or ($recordValue -match $dnsRecord.MissingRegex)
-            $statusText = if ($isMissing) { $missingStateLabel } else { $foundStateLabel }
-            $statusClass = if ($isMissing) { 'badge-warning' } else { 'badge-open' }
-            if ($isMissing) { $null = $missingDnsRecords.Add((ConvertTo-LocalizedText $dnsRecord.Label)) } else { $null = $foundDnsRecords.Add((ConvertTo-LocalizedText $dnsRecord.Label)) }
-            [void]$dnsRows.Append("<tr><td>$(ConvertTo-HtmlSafe (ConvertTo-LocalizedText $dnsRecord.Label))</td><td><span class='badge $statusClass'>$(ConvertTo-HtmlSafe $statusText)</span></td><td>$(ConvertTo-HtmlSafe (ConvertTo-LocalizedReportValue $recordValue))</td></tr>`n")
+        $riskInfoLabel = ConvertTo-LocalizedText 'Bilgi'
+        $riskWarnLabel = ConvertTo-LocalizedText 'Uyarı'
+        $riskDangerLabel = ConvertTo-LocalizedText 'Tehlike'
+        $details = $ReportData.DNS_Exposure_Details
+        $foundList = @($ReportData.DNS_Exposure_Found)
+        $missingList = @($ReportData.DNS_Exposure_Missing)
+        $totalChecks = 5
+        $foundCount = $foundList.Count
+        $missingCount = $missingList.Count
+        $foundPct = if ($totalChecks -gt 0) { [Math]::Round(($foundCount / $totalChecks) * 100) } else { 0 }
+        $barColor = if ($foundPct -ge 80) { '#107c10' } elseif ($foundPct -ge 40) { '#f7630c' } else { '#d13438' }
+        # Progress bar
+        $dnsExposureSection = "<section class='websec-section'><h3>$dnsExposureTitle</h3>"
+        $dnsExposureSection += "<div style='margin:12px 0 18px 0'><div style='display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px;color:#475467'><span>${foundLabel}: $foundCount / $totalChecks</span><span>$foundPct%</span></div><div style='height:10px;background:#edf2f7;border-radius:5px;overflow:hidden'><div style='height:100%;width:$foundPct%;background:$barColor;border-radius:5px'></div></div>"
+        $foundSummary = if ($foundCount -gt 0) { [string]::Join(', ', @($foundList | ForEach-Object { ConvertTo-LocalizedText $_ })) } else { '—' }
+        $missingSummary = if ($missingCount -gt 0) { [string]::Join(', ', @($missingList | ForEach-Object { ConvertTo-LocalizedText $_ })) } else { '—' }
+        $dnsExposureSection += "<div style='margin-top:10px;font-size:12px;color:#475467'><strong style='color:#107c10'>${foundLabel}:</strong> $foundSummary &nbsp;&nbsp;|&nbsp;&nbsp; <strong style='color:#d13438'>${missingLabel}:</strong> $missingSummary</div></div>"
+        # Email security group
+        $emailTypes = @('MX','MX-External','SPF','SPF-Policy','DMARC','DMARC-Policy','DKIM')
+        $emailRows = New-Object Text.StringBuilder
+        foreach ($d in $details) {
+            if ($d.Type -notin $emailTypes) { continue }
+            $riskClass = switch ($d.Risk) { 'Danger' { 'badge-closed' } 'Warn' { 'badge-warning' } default { 'badge-open' } }
+            $riskText = switch ($d.Risk) { 'Danger' { $riskDangerLabel } 'Warn' { $riskWarnLabel } default { $riskInfoLabel } }
+            $recordLabel = switch ($d.Type) {
+                'MX' { ConvertTo-LocalizedText 'MX Kayıtları' }
+                'MX-External' { ConvertTo-LocalizedText 'Harici MX Sağlayıcıları' }
+                'SPF' { ConvertTo-LocalizedText 'SPF Kaydı' }
+                'SPF-Policy' { ConvertTo-LocalizedText 'SPF Politika Analizi' }
+                'DMARC' { ConvertTo-LocalizedText 'DMARC Kaydı' }
+                'DMARC-Policy' { ConvertTo-LocalizedText 'DMARC Politika Analizi' }
+                'DKIM' { ConvertTo-LocalizedText 'DKIM Kaydı' }
+            }
+            [void]$emailRows.Append("<tr><td>$(ConvertTo-HtmlSafe $recordLabel)</td><td><span class='badge $riskClass'>$(ConvertTo-HtmlSafe $riskText)</span></td><td style='font-size:12px;word-break:break-word'>$(ConvertTo-HtmlSafe (ConvertTo-LocalizedReportValue $d.Detail))</td></tr>`n")
         }
-        $foundSummary = if ($foundDnsRecords.Count -gt 0) { [string]::Join(', ', @($foundDnsRecords)) } else { '—' }
-        $missingSummary = if ($missingDnsRecords.Count -gt 0) { [string]::Join(', ', @($missingDnsRecords)) } else { '—' }
-        $dnsExposureSection = "<section class='websec-section'><h3>$dnsExposureTitle</h3><div class='websec-summary'><strong>${foundLabel}:</strong> $foundSummary<br><strong>${missingLabel}:</strong> $missingSummary</div><table><thead><tr><th>$(ConvertTo-LocalizedText 'Denetim')</th><th>$(ConvertTo-LocalizedText 'Durum')</th><th>$(ConvertTo-LocalizedText 'Detay')</th></tr></thead><tbody>$($dnsRows.ToString())</tbody></table></section>"
+        if ($emailRows.Length -gt 0) {
+            $dnsExposureSection += "<div class='metric-group-sub'>$emailSecTitle</div><table><thead><tr><th>$(ConvertTo-LocalizedText 'Denetim')</th><th>$(ConvertTo-LocalizedText 'Durum')</th><th>$(ConvertTo-LocalizedText 'Detay')</th></tr></thead><tbody>$($emailRows.ToString())</tbody></table>"
+        }
+        # Certificate authority group
+        $caTypes = @('CAA')
+        $caRows = New-Object Text.StringBuilder
+        foreach ($d in $details) {
+            if ($d.Type -notin $caTypes) { continue }
+            $riskClass = switch ($d.Risk) { 'Danger' { 'badge-closed' } 'Warn' { 'badge-warning' } default { 'badge-open' } }
+            $riskText = switch ($d.Risk) { 'Danger' { $riskDangerLabel } 'Warn' { $riskWarnLabel } default { $riskInfoLabel } }
+            $recordLabel = ConvertTo-LocalizedText 'CAA Kayıtları'
+            [void]$caRows.Append("<tr><td>$(ConvertTo-HtmlSafe $recordLabel)</td><td><span class='badge $riskClass'>$(ConvertTo-HtmlSafe $riskText)</span></td><td style='font-size:12px;word-break:break-word'>$(ConvertTo-HtmlSafe (ConvertTo-LocalizedReportValue $d.Detail))</td></tr>`n")
+        }
+        if ($caRows.Length -gt 0) {
+            $dnsExposureSection += "<div class='metric-group-sub'>$caSecTitle</div><table><thead><tr><th>$(ConvertTo-LocalizedText 'Denetim')</th><th>$(ConvertTo-LocalizedText 'Durum')</th><th>$(ConvertTo-LocalizedText 'Detay')</th></tr></thead><tbody>$($caRows.ToString())</tbody></table>"
+        }
+        $dnsExposureSection += "</section>"
     }
     $metricsGridHtml += $dnsExposureSection
     $route = New-Object Text.StringBuilder
