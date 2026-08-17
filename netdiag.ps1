@@ -193,6 +193,14 @@ $Script:EnglishTranslations = [ordered]@{
     'HTTP Protokolü'='HTTP Protocol'
     'Güvenlik Başlıkları'='Security Headers'
     'Dış JMeter'='External JMeter'
+    'Script Bilgisi'='Script Info'
+    'Sistem Kaynakları'='System Resources'
+    'Ağ Adaptörü'='Network Adapter'
+    'DNS'='DNS'
+    'ICMP / Ping'='ICMP / Ping'
+    'TCP / UDP Portları'='TCP / UDP Ports'
+    'Hedef Jitter Metrikleri'='Destination Jitter Metrics'
+    'GeoIP / ASN'='GeoIP / ASN'
     'Performans Bilgi Grafikleri'='Performance Infographics'
     'Ağ Kalitesi Özeti'='Network Quality Summary'
     'HTTP Yük Testi Özeti'='HTTP Load Test Summary'
@@ -3841,12 +3849,24 @@ if($ExportHtmlPath){
         Adapter_Status='Ağ Adaptörü Durumu'; Adapter_Link_Speed='Adaptör Bağlantı Hızı'; Adapter_Media='Adaptör Medya Tipi'; Adapter_Packet_Errors='Adaptör Paket Hataları';
         Port_List='Taranan Portlar'
     }
-    $systemMetricKeys = @(
-        'Script_Version','Language','System_UICulture','Yes_No_Format','Target','Port','ScanLevel','Timestamp',
-        'Env_User','Env_ComputerName','Env_OS','Env_CPU','Env_CPU_Source','Env_Memory','Env_Disk','Env_LocalIP',
-        'Wifi_Ssid','Wifi_Signal_Percent','Wifi_Channel','Wifi_Radio_Type','Wifi_Rx_Mbps','Wifi_Tx_Mbps',
-        'Adapter_Status','Adapter_Link_Speed','Adapter_Media','Adapter_Packet_Errors'
+    $systemMetricGroups = @(
+        @{ Title='Script Bilgisi'; Keys=@('Script_Version','Language','System_UICulture','Yes_No_Format','Timestamp') },
+        @{ Title='Hedef'; Keys=@('Target','Port','ScanLevel') },
+        @{ Title='Sistem Kaynakları'; Keys=@('Env_User','Env_ComputerName','Env_OS','Env_CPU','Env_CPU_Source','Env_Memory','Env_Disk','Env_LocalIP') },
+        @{ Title='Wi-Fi'; Keys=@('Wifi_Ssid','Wifi_Signal_Percent','Wifi_Channel','Wifi_Radio_Type','Wifi_Rx_Mbps','Wifi_Tx_Mbps') },
+        @{ Title='Ağ Adaptörü'; Keys=@('Adapter_Status','Adapter_Link_Speed','Adapter_Media','Adapter_Packet_Errors') }
     )
+    $networkMetricGroups = @(
+        @{ Title='DNS'; Keys=@('Local_DNS_IP','Public_DNS_IP','Cloudflare_DNS_IP','DNS_Query_Time','DNS_Name_Servers','Reverse_DNS','CDN_Status','DNSSEC_Status','DNS_DoT_Status','DNS_DoH_Status','DNS_Resolver_Consistency') },
+        @{ Title='ICMP / Ping'; Keys=@('ICMP_Status','Unloaded_Avg_RTT','Path_MTU','ICMP_Sent','ICMP_Received','ICMP_Loss') },
+        @{ Title='TCP / UDP Portları'; Keys=@('Open_Port_Count','Tested_Port_Count','Verified_Service_Count','Unverified_TCP_Count','Closed_Filtered_Count','Port_Matrix','UDP_Port_Matrix','Verified_UDP_Service_Count','Unresponsive_UDP_Service_Count','Target_Port_Status','Port_List','Reachability_Status') },
+        @{ Title='Hedef Jitter Metrikleri'; Keys=@('Unloaded_Min_RTT','Unloaded_Median_RTT','Unloaded_p95_RTT','Unloaded_Max_RTT','Destination_RTT_StdDev','Destination_Mean_Jitter','Destination_Peak_Jitter','Destination_Smoothed_Variation') },
+        @{ Title='GeoIP / ASN'; Keys=@('GeoIP_Target_ASN','GeoIP_Target_Location','GeoIP_Target_ISP','GeoIP_Hop_ASN') }
+    )
+    $systemMetricKeys = @()
+    foreach ($g in $systemMetricGroups) { $systemMetricKeys += $g.Keys }
+    $networkMetricKeys = @()
+    foreach ($g in $networkMetricGroups) { $networkMetricKeys += $g.Keys }
     $applicationMetricGroups = @(
         @{ Title='Yük Testi Yapılandırması'; Keys=@('Effective_Load_Test_URL','Load_Test_Status','JMeter_Engine','JMeter_Method','JMeter_Peak_Concurrency','JMeter_RampUp','JMeter_Warmup_Requests','JMeter_Threads') },
         @{ Title='Yük Testi Sonuçları'; Keys=@('JMeter_Total_Requests','JMeter_Successful_Requests','JMeter_Failed_Requests','JMeter_Test_Duration','JMeter_Error_Rate','JMeter_Throughput_RPS') },
@@ -3862,10 +3882,12 @@ if($ExportHtmlPath){
     $applicationMetricKeys = @()
     foreach ($g in $applicationMetricGroups) { $applicationMetricKeys += $g.Keys }
     $dnsExposureKeys = @('DNS_MX_Records','DNS_SPF_Record','DNS_DMARC_Record','DNS_DKIM_Record','DNS_CAA_Records','DNS_Exposure_Summary')
-    $rowsSystem = New-Object Text.StringBuilder
-    $rowsNetwork = New-Object Text.StringBuilder
     $appGroupRows = [ordered]@{}
     foreach ($g in $applicationMetricGroups) { $appGroupRows[$g.Title] = New-Object Text.StringBuilder }
+    $sysGroupRows = [ordered]@{}
+    foreach ($g in $systemMetricGroups) { $sysGroupRows[$g.Title] = New-Object Text.StringBuilder }
+    $netGroupRows = [ordered]@{}
+    foreach ($g in $networkMetricGroups) { $netGroupRows[$g.Title] = New-Object Text.StringBuilder }
     foreach ($x in $ReportData.GetEnumerator()) {
         if ($x.Key -in $dnsExposureKeys) { continue }
         $rawTitle = if ($displayNames.ContainsKey([string]$x.Key)) {
@@ -3895,7 +3917,12 @@ if($ExportHtmlPath){
         $wideClass = if ($x.Key -in @('Port_Matrix','UDP_Port_Matrix','Security_Headers')) { ' metric-item-wide' } else { '' }
         $itemHtml = "<div class='metric-item$wideClass'><div class='metric-label'>$(ConvertTo-HtmlSafe $title)</div><div class='metric-value'>$value</div></div>`n"
         if ($systemMetricKeys -contains $x.Key) {
-            [void]$rowsSystem.Append($itemHtml)
+            foreach ($g in $systemMetricGroups) {
+                if ($g.Keys -contains $x.Key) {
+                    [void]$sysGroupRows[$g.Title].Append($itemHtml)
+                    break
+                }
+            }
         } elseif ($applicationMetricKeys -contains $x.Key) {
             foreach ($g in $applicationMetricGroups) {
                 if ($g.Keys -contains $x.Key) {
@@ -3903,13 +3930,39 @@ if($ExportHtmlPath){
                     break
                 }
             }
+        } elseif ($networkMetricKeys -contains $x.Key) {
+            foreach ($g in $networkMetricGroups) {
+                if ($g.Keys -contains $x.Key) {
+                    [void]$netGroupRows[$g.Title].Append($itemHtml)
+                    break
+                }
+            }
         } else {
-            [void]$rowsNetwork.Append($itemHtml)
+            # Fallback: items not in any group go to first network group
+            if ($networkMetricGroups.Count -gt 0) {
+                [void]$netGroupRows[$networkMetricGroups[0].Title].Append($itemHtml)
+            }
         }
     }
     $generalSystemTitle = ConvertTo-LocalizedText 'Genel Sistem Metrikleri'
     $networkMetricsTitle = ConvertTo-LocalizedText 'Ağ Metrikleri'
     $applicationMetricsTitle = ConvertTo-LocalizedText 'Uygulama Metrikleri'
+    $sysGroupsHtml = ''
+    foreach ($g in $systemMetricGroups) {
+        $groupTitle = ConvertTo-LocalizedText $g.Title
+        $groupContent = $sysGroupRows[$g.Title].ToString()
+        if (-not [string]::IsNullOrWhiteSpace($groupContent)) {
+            $sysGroupsHtml += "<div class='metric-group-sub'>$groupTitle</div><div class='metric-grid'>$groupContent</div>"
+        }
+    }
+    $netGroupsHtml = ''
+    foreach ($g in $networkMetricGroups) {
+        $groupTitle = ConvertTo-LocalizedText $g.Title
+        $groupContent = $netGroupRows[$g.Title].ToString()
+        if (-not [string]::IsNullOrWhiteSpace($groupContent)) {
+            $netGroupsHtml += "<div class='metric-group-sub'>$groupTitle</div><div class='metric-grid'>$groupContent</div>"
+        }
+    }
     $appGroupsHtml = ''
     foreach ($g in $applicationMetricGroups) {
         $groupTitle = ConvertTo-LocalizedText $g.Title
@@ -3918,7 +3971,7 @@ if($ExportHtmlPath){
             $appGroupsHtml += "<div class='metric-group-sub'>$groupTitle</div><div class='metric-grid'>$groupContent</div>"
         }
     }
-    $metricsGridHtml = "<div class='metric-group-title'>$generalSystemTitle</div><div class='metric-grid'>$($rowsSystem.ToString())</div><div class='metric-group-title'>$networkMetricsTitle</div><div class='metric-grid'>$($rowsNetwork.ToString())</div><div class='metric-group-title'>$applicationMetricsTitle</div>$appGroupsHtml"
+    $metricsGridHtml = "<div class='metric-group-title'>$generalSystemTitle</div>$sysGroupsHtml<div class='metric-group-title'>$networkMetricsTitle</div>$netGroupsHtml<div class='metric-group-title'>$applicationMetricsTitle</div>$appGroupsHtml"
     $dnsExposureSection = ''
     if ($ReportData.Contains('DNS_Exposure_Summary')) {
         $dnsExposureTitle = ConvertTo-LocalizedText 'DNS Sızıntı Özeti'
