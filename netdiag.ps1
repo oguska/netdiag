@@ -209,6 +209,7 @@ $Script:EnglishTranslations = [ordered]@{
     'Bilgi'='Info'
     'Uyarı'='Warning'
     'Tehlike'='Danger'
+    'servisi doğrulandı'='service verified'
     'Performans Bilgi Grafikleri'='Performance Infographics'
     'Ağ Kalitesi Özeti'='Network Quality Summary'
     'HTTP Yük Testi Özeti'='HTTP Load Test Summary'
@@ -574,7 +575,11 @@ function Get-CompiledReportTranslations {
             @('ve hata oranı','and error rate'),
             @('ve kayıp','and loss'),
             @('hedef RTT','destination RTT'),
-            @('Hedef jitter','Destination jitter')
+            @('Hedef jitter','Destination jitter'),
+            @('SPF politikası','SPF policy'),
+            @('DMARC politikası','DMARC policy'),
+            @('servisi doğrulandı','service verified'),
+            @('saldırı yüzeyi ve sayfa analizi yapılıyor','attack-surface and page analysis in progress')
         )
         foreach ($pair in $phraseList) {
             $list.Add([pscustomobject]@{
@@ -3892,7 +3897,7 @@ if($ExportHtmlPath){
     )
     $applicationMetricKeys = @()
     foreach ($g in $applicationMetricGroups) { $applicationMetricKeys += $g.Keys }
-    $dnsExposureKeys = @('DNS_MX_Records','DNS_SPF_Record','DNS_DMARC_Record','DNS_DKIM_Record','DNS_CAA_Records','DNS_Exposure_Summary')
+    $dnsExposureKeys = @('DNS_MX_Records','DNS_SPF_Record','DNS_DMARC_Record','DNS_DKIM_Record','DNS_CAA_Records','DNS_Exposure_Summary','DNS_Exposure_Details','DNS_Exposure_Found','DNS_Exposure_Missing')
     $appGroupRows = [ordered]@{}
     foreach ($g in $applicationMetricGroups) { $appGroupRows[$g.Title] = New-Object Text.StringBuilder }
     $sysGroupRows = [ordered]@{}
